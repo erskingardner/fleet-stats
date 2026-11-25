@@ -105,21 +105,92 @@ private struct AddMachineSheet: View {
     @State private var isTesting = false
     @State private var testSucceeded = false
 
+    @State private var discoveredPeers: [DiscoveredTailscalePeer] = []
+    @State private var isScanning = false
+    @State private var selectedPeer: DiscoveredTailscalePeer?
+    @State private var copiedSSH = false
+
+    private var alreadyAddedAddresses: Set<String> {
+        Set(store.hosts.map { $0.address.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) })
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Add Fleet Machine")
-                .font(.headline)
-            Text("Enter the machine's Tailscale hostname or IP (e.g. linux-tower or 100.x.y.z) and its fleetd bearer token.")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Add Fleet Machine")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    scanTailnet()
+                } label: {
+                    if isScanning {
+                        HStack(spacing: 5) {
+                            ProgressView().controlSize(.mini)
+                            Text("Scanning Tailnet…")
+                        }
+                    } else {
+                        Label("Rescan Tailscale", systemImage: "arrow.clockwise")
+                    }
+                }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .disabled(isScanning)
+            }
+
+            // Discovered Tailscale peers section
+            if !discoveredPeers.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("DISCOVERED ON YOUR TAILNET")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(discoveredPeers) { peer in
+                                let isAdded = alreadyAddedAddresses.contains(peer.preferredAddress.lowercased())
+                                    || alreadyAddedAddresses.contains(peer.ipv4.lowercased())
+                                    || alreadyAddedAddresses.contains(peer.hostName.lowercased())
+                                peerRow(peer, alreadyAdded: isAdded)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 130)
+                }
+            } else if !isScanning {
+                Text("Enter a machine's Tailscale hostname or IP (e.g. linux-tower or 100.x.y.z) and its fleetd bearer token.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Form {
                 TextField("Display Name", text: $name, prompt: Text("Linux Tower"))
-                TextField("Tailscale Host / IP", text: $address, prompt: Text("linux-tower"))
+                TextField("Tailscale Host / IP", text: $address, prompt: Text("linux-tower.tailnet.ts.net"))
                 TextField("Port", text: $port)
                 SecureField("Bearer Token", text: $token, prompt: Text("fls_..."))
             }
             .formStyle(.grouped)
+
+            if let peer = selectedPeer {
+                HStack(spacing: 6) {
+                    Text("Need the token from \(peer.hostName)?")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if copiedSSH {
+                        Text("Copied!")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Button("Copy SSH Command") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(peer.sshCopyTokenCommand, forType: .string)
+                        copiedSSH = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            copiedSSH = false
+                        }
+                    }
+                    .font(.caption)
+                }
+            }
 
             if let testResult {
                 HStack(spacing: 6) {
@@ -150,7 +221,78 @@ private struct AddMachineSheet: View {
             }
         }
         .padding(18)
-        .frame(width: 440)
+        .frame(width: 480)
+        .onAppear {
+            scanTailnet()
+        }
+    }
+
+    private func peerRow(_ peer: DiscoveredTailscalePeer, alreadyAdded: Bool) -> some View {
+        let isSelected = selectedPeer?.id == peer.id
+        return Button {
+            selectedPeer = peer
+            name = peer.hostName
+            address = peer.preferredAddress
+            testResult = nil
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(peer.isOnline ? Color.green : Color.gray.opacity(0.45))
+                    .frame(width: 6.5, height: 6.5)
+                Image(systemName: peer.isLinux ? "server.rack" : "macmini")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(peer.hostName)
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text("\(peer.ipv4) · \(peer.os)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if alreadyAdded {
+                    Text("Added")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                } else if peer.fleetdDetected {
+                    Text("fleetd detected")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.15), in: Capsule())
+                } else if !peer.isOnline {
+                    Text("Offline")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : .clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(alreadyAdded)
+        .opacity(alreadyAdded ? 0.55 : 1.0)
+    }
+
+    private func scanTailnet() {
+        isScanning = true
+        let targetPort = Int(port) ?? 9470
+        Task {
+            discoveredPeers = await TailscaleDiscovery.discoverPeers(port: targetPort)
+            isScanning = false
+        }
     }
 
     private func runTest() {
