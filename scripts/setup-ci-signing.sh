@@ -29,8 +29,13 @@ read -r -s -p "App-Specific Password (xxxx-xxxx-xxxx-xxxx): " APPLE_APP_PASSWORD
 echo ""
 
 echo ""
-echo "==> Uploading secrets to GitHub Actions ($REPO)..."
-base64 -i "$P12_PATH" | tr -d '\n' | gh secret set MACOS_CERT_P12 -R "$REPO"
+echo "==> Encoding certificate & uploading secrets to GitHub Actions ($REPO)..."
+CERT_B64="$(base64 -i "$P12_PATH" | tr -d '\n')"
+if [[ -z "$CERT_B64" ]]; then
+  echo "ERROR: Failed to read $P12_PATH (if it's in ~/Downloads, move it to /tmp/ first due to macOS folder privacy)." >&2
+  exit 1
+fi
+printf '%s' "$CERT_B64" | gh secret set MACOS_CERT_P12 -R "$REPO"
 printf '%s' "$P12_PASS" | gh secret set MACOS_CERT_PASSWORD -R "$REPO"
 printf '%s' "$APPLE_ID" | gh secret set APPLE_ID -R "$REPO"
 printf '%s' "$APPLE_APP_PASSWORD" | gh secret set APPLE_APP_PASSWORD -R "$REPO"
