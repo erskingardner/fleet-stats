@@ -55,8 +55,8 @@ struct SettingsView: View {
             Divider()
             detailPane
         }
-        .ignoresSafeArea(.all, edges: .top)
-        .frame(minWidth: 700, idealWidth: 760, minHeight: 500, idealHeight: 560)
+        .ignoresSafeArea(.container, edges: .top)
+        .frame(minWidth: 700, minHeight: 500)
     }
 
     private var sidebar: some View {
