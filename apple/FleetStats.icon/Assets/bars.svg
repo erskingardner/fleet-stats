@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bar1" x1="274" y1="420" x2="274" y2="796" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="bar2" x1="512" y1="228" x2="512" y2="796" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E0F2FE"/>
+      <stop offset="40%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="bar3" x1="750" y1="340" x2="750" y2="796" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 3 bold, balanced Liquid Glass telemetry bars -->
+  <rect x="200" y="444" width="148" height="352" rx="74" fill="url(#bar1)"/>
+  <rect x="438" y="228" width="148" height="568" rx="74" fill="url(#bar2)"/>
+  <rect x="676" y="348" width="148" height="448" rx="74" fill="url(#bar3)"/>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="liveDot" x1="274" y1="228" x2="274" y2="376" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6EE7B7"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Single live status orb balancing the left column -->
+  <circle cx="274" cy="302" r="74" fill="url(#liveDot)"/>
+</svg>
