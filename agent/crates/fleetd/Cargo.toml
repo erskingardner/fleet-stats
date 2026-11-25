@@ -26,4 +26,6 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
 uuid = { version = "1.12", features = ["v4"] }
