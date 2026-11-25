@@ -110,39 +110,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         supervisor.stop()
     }
 
+    private func makeSettingsHostView(pane: SettingsPane, frame: NSRect) -> NSView {
+        let container = NSView(frame: frame)
+        container.autoresizingMask = [.width, .height]
+
+        let hostView = NSHostingView(
+            rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
+        )
+        hostView.safeAreaRegions = []
+        hostView.sizingOptions = []
+        hostView.translatesAutoresizingMaskIntoConstraints = true
+        hostView.frame = container.bounds
+        hostView.autoresizingMask = [.width, .height]
+        container.addSubview(hostView)
+        return container
+    }
+
     private func showSettingsWindow(pane: SettingsPane = .fleet) {
         NSApp.activate(ignoringOtherApps: true)
         if let win = settingsWindow {
-            let savedFrame = win.frame
-            let hosting = NSHostingController(
-                rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
+            let contentSize = win.contentView?.bounds.size ?? NSSize(width: 760, height: 560)
+            win.contentView = makeSettingsHostView(
+                pane: pane,
+                frame: NSRect(origin: .zero, size: contentSize)
             )
-            hosting.safeAreaRegions = []
-            hosting.sizingOptions = []
-            win.contentViewController = hosting
-            win.setFrame(savedFrame, display: true)
             win.makeKeyAndOrderFront(nil)
             return
         }
-        let hosting = NSHostingController(
-            rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
-        )
-        hosting.safeAreaRegions = []
-        hosting.sizingOptions = []
+        let initialSize = NSSize(width: 760, height: 560)
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        win.contentViewController = hosting
+        win.contentView = makeSettingsHostView(
+            pane: pane,
+            frame: NSRect(origin: .zero, size: initialSize)
+        )
         win.title = "FleetStats Settings"
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
         win.isMovableByWindowBackground = true
         win.minSize = NSSize(width: 700, height: 500)
         win.maxSize = NSSize(width: 1100, height: 820)
-        win.setContentSize(NSSize(width: 760, height: 560))
+        win.setContentSize(initialSize)
         win.center()
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
