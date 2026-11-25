@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="arcGrad" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#818CF8"/>
+      <stop offset="100%" stop-color="#2DD4BF"/>
+    </linearGradient>
+  </defs>
+  <!-- Background track ring -->
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="112"/>
+  <!-- Bold 270-degree telemetry gauge arc -->
+  <path d="M 300 724 A 300 300 0 1 1 724 724"
+        fill="none" stroke="url(#arcGrad)" stroke-width="112" stroke-linecap="round"/>
+</svg>

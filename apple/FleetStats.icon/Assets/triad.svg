@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- 3 fleet nodes forming a tight precision triad inside the gauge -->
+  <circle cx="512" cy="404" r="68" fill="#E0F2FE"/>
+  <circle cx="408" cy="576" r="68" fill="#34D399"/>
+  <circle cx="616" cy="576" r="68" fill="#FF5A4E"/>
+</svg>
