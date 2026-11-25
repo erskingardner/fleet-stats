@@ -71,11 +71,15 @@ jobs:
           brew install xcodegen
 
       - name: Import Developer ID certificate & Apple G2 CA
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "No MACOS_CERT_P12 secret configured; skipping Developer ID import."
+            exit 0
+          fi
+
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
           KEYCHAIN_PASS="$(uuidgen)"
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
@@ -100,42 +104,48 @@ jobs:
 
       - name: Build Universal fleetd & signed FleetStats.dmg
         env:
-          REQUIRE_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && '1' || '0' }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
         run: |
           chmod +x scripts/*.sh
-          ./scripts/build-dmg.sh
+          if [ -n "$MACOS_CERT_P12" ]; then
+            REQUIRE_SIGNING=1 ./scripts/build-dmg.sh
+          else
+            ./scripts/build-dmg.sh
+          fi
 
-      - name: Notarize & staple DMG (App Store Connect API Key)
-        if: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' }}
+      - name: Notarize & staple DMG
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: |
-          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
-          echo "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
-          xcrun notarytool submit dist/FleetStats.dmg \
-            --key "$KEY_PATH" \
-            --key-id "$APPLE_API_KEY_ID" \
-            --issuer "$APPLE_API_ISSUER_ID" \
-            --wait
-          xcrun stapler staple dist/FleetStats.dmg
-          xcrun stapler validate dist/FleetStats.dmg
-
-      - name: Notarize & staple DMG (Apple ID + App-Specific Password)
-        if: ${{ secrets.APPLE_API_KEY_P8 == '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
-        env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '8Z6Q2LZ77W' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit dist/FleetStats.dmg \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple dist/FleetStats.dmg
-          xcrun stapler validate dist/FleetStats.dmg
+          TEAM_ID="${APPLE_TEAM_ID:-8Z6Q2LZ77W}"
+          if [ -n "$APPLE_API_KEY_P8" ] && [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER_ID" ]; then
+            echo "==> Notarizing via App Store Connect API key..."
+            KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+            echo "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+            xcrun notarytool submit dist/FleetStats.dmg \
+              --key "$KEY_PATH" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+            xcrun stapler staple dist/FleetStats.dmg
+            xcrun stapler validate dist/FleetStats.dmg
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "==> Notarizing via Apple ID ($APPLE_ID, team $TEAM_ID)..."
+            xcrun notarytool submit dist/FleetStats.dmg \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$TEAM_ID" \
+              --wait
+            xcrun stapler staple dist/FleetStats.dmg
+            xcrun stapler validate dist/FleetStats.dmg
+          else
+            echo "No Apple notarization secrets configured; skipping notarization."
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
