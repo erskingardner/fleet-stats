@@ -29,6 +29,56 @@ public enum ByteFormatters {
         }
     }
 
+    /// Formats an upload/download pair using one synchronized unit (`KB/s`, `MB/s`, or `GB/s`)
+    /// so both rows always share the same unit and never jitter horizontally in the menu bar.
+    public static func pairedMenuRates(
+        up: UInt64,
+        down: UInt64
+    ) -> (upValue: String, downValue: String, unit: String) {
+        let peak = max(up, down)
+        let kb = 1024.0
+        let mb = kb * 1024.0
+        let gb = mb * 1024.0
+
+        if Double(peak) >= 1000.0 * mb {
+            return (
+                formatPairedNumber(Double(up) / gb, allowDecimal: true),
+                formatPairedNumber(Double(down) / gb, allowDecimal: true),
+                "GB/s"
+            )
+        } else if Double(peak) >= 1000.0 * kb {
+            return (
+                formatPairedNumber(Double(up) / mb, allowDecimal: true),
+                formatPairedNumber(Double(down) / mb, allowDecimal: true),
+                "MB/s"
+            )
+        } else {
+            return (
+                formatPairedNumber(Double(up) / kb, allowDecimal: false),
+                formatPairedNumber(Double(down) / kb, allowDecimal: false),
+                "KB/s"
+            )
+        }
+    }
+
+    private static func formatPairedNumber(_ value: Double, allowDecimal: Bool) -> String {
+        if allowDecimal {
+            if value < 10.0 {
+                return String(format: "%.1f", value)
+            } else if value < 100.0 {
+                return String(format: "%.1f", value)
+            } else {
+                return String(format: "%.0f", min(value, 999.0))
+            }
+        } else {
+            let rounded = value.rounded()
+            if rounded < 1 && value > 0 {
+                return "1"
+            }
+            return String(format: "%.0f", min(rounded, 999.0))
+        }
+    }
+
     public static func bytes(_ count: UInt64) -> String {
         let val = Double(count)
         let kb = 1024.0

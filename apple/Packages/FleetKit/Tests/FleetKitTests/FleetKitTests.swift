@@ -102,3 +102,22 @@ import Testing
     #expect(!FleetClient.isAllowedPlaintextHost("192.168.1.10"))
     #expect(!FleetClient.isAllowedPlaintextHost("10.0.0.5"))
 }
+
+@Test func pairedMenuRatesSynchronizeUnits() {
+    let kbPair = ByteFormatters.pairedMenuRates(up: 9 * 1024, down: 750 * 1024)
+    #expect(kbPair.unit == "KB/s")
+    #expect(kbPair.upValue == "9")
+    #expect(kbPair.downValue == "750")
+
+    // When download crosses into MB/s, upload switches to MB/s with decimal together
+    let mbPair = ByteFormatters.pairedMenuRates(up: 205 * 1024, down: 4 * 1024 * 1024)
+    #expect(mbPair.unit == "MB/s")
+    #expect(mbPair.upValue == "0.2")
+    #expect(mbPair.downValue == "4.0")
+
+    // When peak crosses into GB/s, both switch to GB/s together
+    let gbPair = ByteFormatters.pairedMenuRates(up: 102_400 * 1024, down: 1_536 * 1024 * 1024)
+    #expect(gbPair.unit == "GB/s")
+    #expect(gbPair.upValue == "0.1")
+    #expect(gbPair.downValue == "1.5")
+}

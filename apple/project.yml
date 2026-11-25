@@ -23,6 +23,14 @@ targets:
           - FleetStats.entitlements
     info:
       path: Apps/FleetStatsMac/Info.plist
+      properties:
+        CFBundleDisplayName: FleetStats
+        CFBundleShortVersionString: "0.1.3"
+        CFBundleVersion: "3"
+        LSMinimumSystemVersion: "14.0"
+        LSUIElement: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
     entitlements:
       path: Apps/FleetStatsMac/FleetStats.entitlements
     settings:

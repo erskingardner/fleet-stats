@@ -83,35 +83,48 @@ struct MenuBarStripView: View {
                 .foregroundStyle(isAlert ? Color.red : Color.primary)
                 .lineLimit(1)
         }
-        .frame(minWidth: 28, alignment: .leading)
+        .frame(width: 30, alignment: .leading)
         .fixedSize()
     }
 
     private var networkColumn: some View {
-        VStack(alignment: .trailing, spacing: 0.5) {
-            HStack(spacing: 3) {
-                Circle()
-                    .fill(Color(red: 1.0, green: 0.27, blue: 0.23))
-                    .frame(width: 5, height: 5)
-                Text(ByteFormatters.compactMenuRate(snap?.network.uploadBps ?? 0))
-                    .font(.system(size: 9, weight: .regular))
-                    .monospacedDigit()
-                    .frame(minWidth: 38, alignment: .trailing)
-                    .lineLimit(1)
-            }
-            HStack(spacing: 3) {
-                Circle()
-                    .fill(Color(red: 0.12, green: 0.58, blue: 1.0))
-                    .frame(width: 5, height: 5)
-                Text(ByteFormatters.compactMenuRate(snap?.network.downloadBps ?? 0))
-                    .font(.system(size: 9, weight: .regular))
-                    .monospacedDigit()
-                    .frame(minWidth: 38, alignment: .trailing)
-                    .lineLimit(1)
-            }
+        let paired = ByteFormatters.pairedMenuRates(
+            up: snap?.network.uploadBps ?? 0,
+            down: snap?.network.downloadBps ?? 0
+        )
+        return VStack(alignment: .leading, spacing: 0.5) {
+            networkRow(
+                dotColor: Color(red: 1.0, green: 0.27, blue: 0.23),
+                value: paired.upValue,
+                unit: paired.unit
+            )
+            networkRow(
+                dotColor: Color(red: 0.12, green: 0.58, blue: 1.0),
+                value: paired.downValue,
+                unit: paired.unit
+            )
         }
         .offset(y: -0.75)
         .fixedSize()
+    }
+
+    private func networkRow(dotColor: Color, value: String, unit: String) -> some View {
+        HStack(spacing: 0) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 5, height: 5)
+            Spacer().frame(width: 3)
+            Text(value)
+                .font(.system(size: 9, weight: .regular))
+                .monospacedDigit()
+                .frame(width: 23, alignment: .trailing)
+                .lineLimit(1)
+            Spacer().frame(width: 2)
+            Text(unit)
+                .font(.system(size: 9, weight: .regular))
+                .frame(width: 24, alignment: .leading)
+                .lineLimit(1)
+        }
     }
 }
 
