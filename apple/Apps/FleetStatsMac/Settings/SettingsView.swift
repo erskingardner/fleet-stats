@@ -3,23 +3,164 @@ import FleetKit
 import ServiceManagement
 import SwiftUI
 
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case fleet
+    case alerts
+    case general
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fleet: "Fleet"
+        case .alerts: "Alerts"
+        case .general: "General"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .fleet: "Manage your local Mac and remote Tailscale machines"
+        case .alerts: "Configure sustained thresholds, OOM alerts, and webhooks"
+        case .general: "Updates, menu bar display, startup, and sharing"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .fleet: "server.rack"
+        case .alerts: "bell.badge.fill"
+        case .general: "gearshape.fill"
+        }
+    }
+
+    var badgeColor: Color {
+        switch self {
+        case .fleet: .blue
+        case .alerts: .orange
+        case .general: .gray
+        }
+    }
+}
+
 struct SettingsView: View {
     @Bindable var store: FleetStore
     let supervisor: LocalAgentSupervisor
     let updater: AppUpdater
+    @State var selectedPane: SettingsPane = .fleet
 
     var body: some View {
-        TabView {
-            FleetMachinesSettingsTab(store: store)
-                .tabItem { Label("Fleet", systemImage: "server.rack") }
-
-            AlertRulesSettingsTab(store: store)
-                .tabItem { Label("Alerts", systemImage: "bell.badge") }
-
-            GeneralSettingsTab(store: store, supervisor: supervisor, updater: updater)
-                .tabItem { Label("General", systemImage: "gearshape") }
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            detailPane
         }
-        .frame(width: 560, height: 470)
+        .frame(minWidth: 700, idealWidth: 760, minHeight: 500, idealHeight: 560)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Leave comfortable space for transparent titlebar traffic lights
+            Spacer().frame(height: 28)
+
+            HStack(spacing: 8) {
+                if let icon = NSApp.applicationIconImage {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 26, height: 26)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("FleetStats")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("v\(updater.currentVersionString)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+
+            ForEach(SettingsPane.allCases) { pane in
+                sidebarRow(pane)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 12)
+        .frame(width: 196)
+        .background(.ultraThinMaterial)
+    }
+
+    private func sidebarRow(_ pane: SettingsPane) -> some View {
+        let isSelected = selectedPane == pane
+        return Button {
+            selectedPane = pane
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: pane.icon)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(pane.badgeColor.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                Text(pane.title)
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.85))
+
+                Spacer()
+
+                if pane == .fleet {
+                    Text("\(store.hosts.count)")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                } else if pane == .general && updater.availableRelease != nil {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 7, height: 7)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.18) : .clear)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var detailPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(selectedPane.title)
+                    .font(.system(size: 20, weight: .semibold))
+                Text(selectedPane.subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 24)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            Group {
+                switch selectedPane {
+                case .fleet:
+                    FleetMachinesSettingsTab(store: store)
+                case .alerts:
+                    AlertRulesSettingsTab(store: store)
+                case .general:
+                    GeneralSettingsTab(store: store, supervisor: supervisor, updater: updater)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
     }
 }
 

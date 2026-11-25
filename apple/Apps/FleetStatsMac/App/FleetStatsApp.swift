@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.statusBar?.openPopover(hostID: hostID, tab: tab)
         }
         notifications.onOpenUpdates = { [weak self] in
-            self?.showSettingsWindow()
+            self?.showSettingsWindow(pane: .general)
         }
 
         updater.onUpdateAvailable = { [weak self] release in
@@ -83,10 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store: store,
             updater: updater,
             onOpenSettings: { [weak self] in
-                self?.showSettingsWindow()
+                self?.showSettingsWindow(pane: .fleet)
             },
             onCheckForUpdates: { [weak self] in
-                self?.showSettingsWindow()
+                self?.showSettingsWindow(pane: .general)
                 Task { await self?.updater.checkForUpdates(userInitiated: true) }
             },
             onQuit: {
@@ -100,18 +100,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         supervisor.stop()
     }
 
-    private func showSettingsWindow() {
+    private func showSettingsWindow(pane: SettingsPane = .fleet) {
         NSApp.activate(ignoringOtherApps: true)
         if let win = settingsWindow {
+            win.contentViewController = NSHostingController(
+                rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
+            )
             win.makeKeyAndOrderFront(nil)
             return
         }
         let hosting = NSHostingController(
-            rootView: SettingsView(store: store, supervisor: supervisor, updater: updater)
+            rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
         )
         let win = NSWindow(contentViewController: hosting)
         win.title = "FleetStats Settings"
-        win.styleMask = [.titled, .closable, .miniaturizable]
+        win.titleVisibility = .hidden
+        win.titlebarAppearsTransparent = true
+        win.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        win.setContentSize(NSSize(width: 760, height: 560))
+        win.minSize = NSSize(width: 700, height: 500)
         win.center()
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
