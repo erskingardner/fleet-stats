@@ -179,7 +179,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         button.title = ""
         button.target = self
         button.action = #selector(handleButtonClick(_:))
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
 
         rebuildStripView()
     }
@@ -190,19 +190,9 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
         hostingView?.removeFromSuperview()
         let root = AnyView(
-            MenuBarStripView(store: store, config: stripConfig) { [weak self] tab in
-                self?.openPopover(tab: tab)
-            }
+            MenuBarStripView(store: store, config: stripConfig) { _ in }
         )
-        let host = StatusBarHostingView(rootView: root)
-        host.onLeftClick = { [weak self] localX in
-            guard let self else { return }
-            let tab = self.metricTab(atX: localX)
-            self.openPopover(tab: tab)
-        }
-        host.onRightClick = { [weak self] event in
-            self?.showContextMenu(event: event)
-        }
+        let host = PassThroughHostingView(rootView: root)
         host.translatesAutoresizingMaskIntoConstraints = false
         button.addSubview(host)
         NSLayoutConstraint.activate([
@@ -247,14 +237,18 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             togglePopover()
             return
         }
-        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+        if event.type == .rightMouseDown || event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             showContextMenu(event: event)
-        } else if let button = statusItem.button {
-            let localX = button.convert(event.locationInWindow, from: nil).x
-            openPopover(tab: metricTab(atX: localX))
-        } else {
-            togglePopover()
+            return
         }
+        guard let button = statusItem.button, let window = button.window else {
+            togglePopover()
+            return
+        }
+        // Always convert from global screen coordinates so multi-monitor & cross-window clicks are exact
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let localX = button.convert(windowPoint, from: nil).x
+        openPopover(tab: metricTab(atX: localX))
     }
 
     /// Maps an X coordinate inside the menu bar strip to the exact clicked metric zone.
@@ -365,20 +359,10 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 }
 
-private final class StatusBarHostingView<Content: View>: NSHostingView<Content> {
-    var onLeftClick: ((CGFloat) -> Void)?
-    var onRightClick: ((NSEvent) -> Void)?
-
-    override func mouseDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.control) {
-            onRightClick?(event)
-        } else {
-            let pt = convert(event.locationInWindow, from: nil)
-            onLeftClick?(pt.x)
-        }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onRightClick?(event)
+/// Passes all hit-testing through to the parent `NSStatusBarButton` so clicks never
+/// double-fire or get swallowed by SwiftUI subviews.
+private final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
