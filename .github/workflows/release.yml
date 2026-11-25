@@ -59,10 +59,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Rust & XcodeGen
+      - name: Install Rust, XcodeGen & create-dmg
         run: |
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
-          brew install xcodegen
+          brew install xcodegen create-dmg
 
       - name: Import Developer ID certificate & Apple G2 CA
         env:

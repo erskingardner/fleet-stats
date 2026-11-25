@@ -72,17 +72,38 @@ STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
 cp -R "$APP_PATH" "$STAGE_DIR/FleetStats.app"
-ln -s /Applications "$STAGE_DIR/Applications"
 
 DMG_PATH="$DIST_DIR/FleetStats.dmg"
+BG_PATH="$ROOT_DIR/apple/Resources/dmg-background.png"
+VOLICON_PATH="$APP_PATH/Contents/Resources/FleetStats.icns"
 rm -f "$DMG_PATH"
 
-hdiutil create \
-  -volname "FleetStats" \
-  -srcfolder "$STAGE_DIR" \
-  -ov \
-  -format UDZO \
-  "$DMG_PATH"
+if command -v create-dmg >/dev/null 2>&1 && [[ -f "$BG_PATH" ]]; then
+  CREATE_ARGS=(
+    --volname "FleetStats"
+    --background "$BG_PATH"
+    --window-pos 200 120
+    --window-size 660 400
+    --icon-size 128
+    --text-size 13
+    --icon "FleetStats.app" 175 208
+    --hide-extension "FleetStats.app"
+    --app-drop-link 485 208
+    --no-internet-enable
+  )
+  if [[ -f "$VOLICON_PATH" ]]; then
+    CREATE_ARGS+=(--volicon "$VOLICON_PATH")
+  fi
+  create-dmg "${CREATE_ARGS[@]}" "$DMG_PATH" "$STAGE_DIR"
+else
+  ln -s /Applications "$STAGE_DIR/Applications"
+  hdiutil create \
+    -volname "FleetStats" \
+    -srcfolder "$STAGE_DIR" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH"
+fi
 
 if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
