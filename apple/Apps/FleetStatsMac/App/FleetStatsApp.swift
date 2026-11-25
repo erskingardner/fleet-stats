@@ -27,6 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let idx = args.firstIndex(of: "--render-screenshots"), idx + 1 < args.count {
+            let outURL = URL(fileURLWithPath: args[idx + 1])
+            NSApp.setActivationPolicy(.prohibited)
+            ScreenshotRenderer.renderAll(to: outURL)
+            exit(0)
+        }
+        #endif
+
         NSApp.setActivationPolicy(.accessory)
 
         notifications.setup()
