@@ -6,8 +6,6 @@ struct PopoverRootView: View {
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
 
-    @State private var showingEvents = false
-
     private var selectedHost: FleetHostConfig? { store.selectedHost }
     private var selectedState: HostRuntimeState? { store.selectedState }
 
@@ -16,12 +14,12 @@ struct PopoverRootView: View {
             fleetHeaderBar
             Divider()
 
-            if showingEvents {
+            if store.showingEvents {
                 EventsView(store: store) { hostID, tab in
                     store.selectedHostID = hostID
                     store.selectedTab = tab
                     store.selectedWindow = .oneDay
-                    showingEvents = false
+                    store.showingEvents = false
                     Task {
                         await store.refreshHistory(for: hostID, window: .oneDay)
                     }
@@ -66,8 +64,8 @@ struct PopoverRootView: View {
             Spacer(minLength: 4)
 
             Button {
-                showingEvents.toggle()
-                if showingEvents {
+                store.showingEvents.toggle()
+                if store.showingEvents {
                     Task {
                         for host in store.hosts {
                             await store.refreshEvents(for: host.id)
@@ -76,9 +74,9 @@ struct PopoverRootView: View {
                 }
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: showingEvents ? "bell.fill" : "bell")
+                    Image(systemName: store.showingEvents ? "bell.fill" : "bell")
                         .font(.system(size: 13))
-                        .foregroundStyle(showingEvents ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(store.showingEvents ? Color.accentColor : Color.secondary)
                         .frame(width: 24, height: 24)
                     if store.totalActiveAlertCount > 0 {
                         Circle()
@@ -105,7 +103,7 @@ struct PopoverRootView: View {
     }
 
     private func hostPill(_ host: FleetHostConfig) -> some View {
-        let isSelected = selectedHost?.id == host.id && !showingEvents
+        let isSelected = selectedHost?.id == host.id && !store.showingEvents
         let state = store.states[host.id]
         let dotColor = statusColor(for: state)
         let osIcon: String = {
@@ -118,7 +116,7 @@ struct PopoverRootView: View {
         }()
 
         return Button {
-            showingEvents = false
+            store.showingEvents = false
             store.selectedHostID = host.id
         } label: {
             HStack(spacing: 5) {
@@ -193,12 +191,17 @@ struct PopoverRootView: View {
                         )
                     }
 
-                    ForEach(snap.activeAlerts) { alert in
-                        alertBanner(
-                            severity: alert.severity,
-                            title: alert.title,
-                            detail: alert.detail
-                        )
+                    if let hostID = selectedHost?.id {
+                        ForEach(store.visibleActiveAlerts(for: hostID)) { alert in
+                            alertBanner(
+                                severity: alert.severity,
+                                title: alert.title,
+                                detail: alert.detail,
+                                onDismiss: {
+                                    store.dismissActiveAlert(alert, for: hostID)
+                                }
+                            )
+                        }
                     }
 
                     switch store.selectedTab {
@@ -268,7 +271,12 @@ struct PopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func alertBanner(severity: AlertSeverity, title: String, detail: String) -> some View {
+    private func alertBanner(
+        severity: AlertSeverity,
+        title: String,
+        detail: String,
+        onDismiss: (() -> Void)? = nil
+    ) -> some View {
         let color: Color = severity == .critical ? .red : .orange
         return HStack(alignment: .top, spacing: 8) {
             Image(systemName: severity == .critical ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
@@ -285,6 +293,16 @@ struct PopoverRootView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss alert")
+            }
         }
         .padding(8)
         .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

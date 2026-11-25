@@ -36,8 +36,6 @@ struct MenuBarStripView: View {
                     value: snap.map { ByteFormatters.percent($0.cpu.totalPct) } ?? "--%",
                     isAlert: (snap?.cpu.totalPct ?? 0) >= 92
                 )
-                .contentShape(Rectangle())
-                .onTapGesture { onSelectZone(.cpu) }
             }
 
             if config.showRAM {
@@ -46,8 +44,6 @@ struct MenuBarStripView: View {
                     value: snap.map { ByteFormatters.percent($0.memory.usedPct) } ?? "--%",
                     isAlert: snap?.memory.pressureLevel == .critical
                 )
-                .contentShape(Rectangle())
-                .onTapGesture { onSelectZone(.ram) }
             }
 
             if config.showSSD {
@@ -56,14 +52,10 @@ struct MenuBarStripView: View {
                     value: snap.map { ByteFormatters.percent($0.disks.primaryUsedPct) } ?? "--%",
                     isAlert: (snap?.disks.primaryUsedPct ?? 0) >= 93
                 )
-                .contentShape(Rectangle())
-                .onTapGesture { onSelectZone(.ssd) }
             }
 
             if config.showNetwork {
                 networkColumn
-                    .contentShape(Rectangle())
-                    .onTapGesture { onSelectZone(.network) }
             }
         }
         .padding(.horizontal, 6)
@@ -196,6 +188,11 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             }
         )
         let host = StatusBarHostingView(rootView: root)
+        host.onLeftClick = { [weak self] localX in
+            guard let self else { return }
+            let tab = self.metricTab(atX: localX)
+            self.openPopover(tab: tab)
+        }
         host.onRightClick = { [weak self] event in
             self?.showContextMenu(event: event)
         }
@@ -245,9 +242,35 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         }
         if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
             showContextMenu(event: event)
+        } else if let button = statusItem.button {
+            let localX = button.convert(event.locationInWindow, from: nil).x
+            openPopover(tab: metricTab(atX: localX))
         } else {
             togglePopover()
         }
+    }
+
+    /// Maps an X coordinate inside the menu bar strip to the exact clicked metric zone.
+    private func metricTab(atX x: CGFloat) -> MetricTab {
+        var zones: [(MetricTab, CGFloat)] = []
+        if stripConfig.showCPU { zones.append((.cpu, 30)) }
+        if stripConfig.showRAM { zones.append((.ram, 30)) }
+        if stripConfig.showSSD { zones.append((.ssd, 30)) }
+        if stripConfig.showNetwork { zones.append((.network, 57)) }
+        guard !zones.isEmpty else { return .cpu }
+
+        let spacing: CGFloat = 11
+        var cursor: CGFloat = 6
+        for (idx, (tab, width)) in zones.enumerated() {
+            let rightEdge = (idx == zones.count - 1)
+                ? CGFloat.greatestFiniteMagnitude
+                : (cursor + width + spacing / 2)
+            if x <= rightEdge {
+                return tab
+            }
+            cursor += width + spacing
+        }
+        return zones.last?.0 ?? .cpu
     }
 
     func openPopover(hostID: UUID? = nil, tab: MetricTab? = nil) {
@@ -255,10 +278,11 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
             store.selectedHostID = hostID
         }
         if let tab {
-            if popover.isShown && store.selectedTab == tab && hostID == nil {
+            if popover.isShown && !store.showingEvents && store.selectedTab == tab && hostID == nil {
                 closePopover()
                 return
             }
+            store.showingEvents = false
             store.selectedTab = tab
         }
         showPopover()
@@ -333,7 +357,17 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 }
 
 private final class StatusBarHostingView<Content: View>: NSHostingView<Content> {
+    var onLeftClick: ((CGFloat) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            onRightClick?(event)
+        } else {
+            let pt = convert(event.locationInWindow, from: nil)
+            onLeftClick?(pt.x)
+        }
+    }
 
     override func rightMouseDown(with event: NSEvent) {
         onRightClick?(event)

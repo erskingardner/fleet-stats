@@ -46,6 +46,12 @@ public final class FleetStore {
     public var selectedHostID: UUID?
     public var selectedTab: MetricTab = .cpu
     public var selectedWindow: HistoryWindow = .live
+    public var showingEvents: Bool = false
+
+    /// Per-host timestamp watermark (epoch ms); events at or before this are cleared/read.
+    public var clearedBeforeMs: [UUID: Int64] = [:]
+    /// Active alert keys (`hostId:alertId:triggeredAt`) dismissed by the user.
+    public var dismissedActiveAlertKeys: Set<String> = []
 
     public var onNotification: (@Sendable (FleetNotificationPayload) -> Void)?
 
@@ -54,9 +60,11 @@ public final class FleetStore {
     private var offlineNotified: Set<UUID> = []
     private var seenEventIDs: [UUID: Set<Int64>] = [:]
     private let hostsDefaultsKey = "com.fleetstats.hosts.v1"
+    private let clearedDefaultsKey = "com.fleetstats.clearedBeforeMs.v1"
 
     public init() {
         loadSavedHosts()
+        loadClearedWatermarks()
     }
 
     public var localHost: FleetHostConfig? {
@@ -80,19 +88,40 @@ public final class FleetStore {
         return states[id]
     }
 
+    public func activeAlertKey(hostID: UUID, alert: ActiveAlert) -> String {
+        "\(hostID.uuidString):\(alert.id):\(alert.triggeredAt)"
+    }
+
+    public func visibleActiveAlerts(for hostID: UUID) -> [ActiveAlert] {
+        guard let alerts = states[hostID]?.snapshot?.activeAlerts else { return [] }
+        return alerts.filter { !dismissedActiveAlertKeys.contains(activeAlertKey(hostID: hostID, alert: $0)) }
+    }
+
+    public func dismissActiveAlert(_ alert: ActiveAlert, for hostID: UUID) {
+        dismissedActiveAlertKeys.insert(activeAlertKey(hostID: hostID, alert: alert))
+    }
+
     public var totalActiveAlertCount: Int {
         hosts.reduce(0) { acc, host in
             guard let st = states[host.id] else { return acc }
+            let activeCount = visibleActiveAlerts(for: host.id).count
+            let unreadEvents = st.events.filter { ev in
+                ev.kind != .alertResolved && ev.timestamp > (clearedBeforeMs[host.id] ?? 0)
+            }.count
             let offlineCount = (!host.isLocal && !st.status.isOnline && st.lastSeenAt != nil) ? 1 : 0
-            return acc + (st.snapshot?.activeAlerts.count ?? 0) + offlineCount
+            return acc + activeCount + unreadEvents + offlineCount
         }
     }
 
-    public var aggregatedIncidents: [FleetIncidentItem] {
+    public func incidents(includeCleared: Bool = false) -> [FleetIncidentItem] {
         var all: [FleetIncidentItem] = []
         for host in hosts {
+            let watermark = clearedBeforeMs[host.id] ?? 0
             let hostEvents = states[host.id]?.events ?? []
             for ev in hostEvents {
+                if !includeCleared && ev.timestamp <= watermark {
+                    continue
+                }
                 all.append(FleetIncidentItem(
                     id: "\(host.id.uuidString)-\(ev.id)",
                     hostId: host.id,
@@ -102,6 +131,26 @@ public final class FleetStore {
             }
         }
         return all.sorted { $0.event.timestamp > $1.event.timestamp }
+    }
+
+    public var aggregatedIncidents: [FleetIncidentItem] {
+        incidents(includeCleared: false)
+    }
+
+    /// Marks all current incidents & active alerts across the fleet (or a single host) as read/cleared.
+    public func clearAlerts(for hostID: UUID? = nil) {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        let targetHosts = hostID.map { id in hosts.filter { $0.id == id } } ?? hosts
+        for host in targetHosts {
+            let maxEventTs = states[host.id]?.events.map(\.timestamp).max() ?? 0
+            clearedBeforeMs[host.id] = max(nowMs, maxEventTs)
+            if let alerts = states[host.id]?.snapshot?.activeAlerts {
+                for alert in alerts {
+                    dismissedActiveAlertKeys.insert(activeAlertKey(hostID: host.id, alert: alert))
+                }
+            }
+        }
+        persistClearedWatermarks()
     }
 
     public func ensureLocalHost(name: String, port: Int = 9470, token: String) -> FleetHostConfig {
@@ -381,5 +430,26 @@ public final class FleetStore {
         if let data = try? JSONEncoder().encode(hosts) {
             UserDefaults.standard.set(data, forKey: hostsDefaultsKey)
         }
+    }
+
+    private func loadClearedWatermarks() {
+        guard let raw = UserDefaults.standard.dictionary(forKey: clearedDefaultsKey) as? [String: Int64] else {
+            return
+        }
+        var out: [UUID: Int64] = [:]
+        for (k, v) in raw {
+            if let id = UUID(uuidString: k) {
+                out[id] = v
+            }
+        }
+        clearedBeforeMs = out
+    }
+
+    private func persistClearedWatermarks() {
+        var raw: [String: Int64] = [:]
+        for (k, v) in clearedBeforeMs {
+            raw[k.uuidString] = v
+        }
+        UserDefaults.standard.set(raw, forKey: clearedDefaultsKey)
     }
 }

@@ -6,27 +6,44 @@ struct EventsView: View {
     let onInspectIncident: (UUID, MetricTab) -> Void
 
     @State private var filterToSelectedHost = false
+    @State private var showCleared = false
 
     private var filteredIncidents: [FleetIncidentItem] {
-        let all = store.aggregatedIncidents
+        let all = store.incidents(includeCleared: showCleared)
         if filterToSelectedHost, let id = store.selectedHost?.id {
             return all.filter { $0.hostId == id }
         }
         return all
     }
 
+    private var hasUnclearableItems: Bool {
+        !store.incidents(includeCleared: false).isEmpty || store.totalActiveAlertCount > 0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Fleet Alerts & Crash Forensics")
+            HStack(spacing: 8) {
+                Text("Alerts & Forensics")
                     .font(.system(size: 12, weight: .medium))
                 Spacer()
                 Picker("", selection: $filterToSelectedHost) {
-                    Text("All Fleet").tag(false)
-                    Text(store.selectedHost?.name ?? "Selected").tag(true)
+                    Text("All").tag(false)
+                    Text(store.selectedHost?.name ?? "Host").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 155)
+                .frame(width: 120)
+
+                if hasUnclearableItems {
+                    Button {
+                        store.clearAlerts(for: filterToSelectedHost ? store.selectedHost?.id : nil)
+                    } label: {
+                        Label("Clear", systemImage: "checkmark.circle")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Mark all alerts as read and clear them")
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -39,13 +56,21 @@ struct EventsView: View {
                     Image(systemName: "checkmark.shield")
                         .font(.system(size: 28))
                         .foregroundStyle(.green)
-                    Text("All Quiet Across the Fleet")
+                    Text("All Clear Across the Fleet")
                         .font(.headline)
                     Text("OOM kills, sustained pressure alerts, and unexpected reboots will appear here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
+                    if !showCleared && !store.incidents(includeCleared: true).isEmpty {
+                        Button("Show Cleared History") {
+                            showCleared = true
+                        }
+                        .font(.caption)
+                        .buttonStyle(.link)
+                        .padding(.top, 4)
+                    }
                     Spacer()
                 }
             } else {
@@ -56,6 +81,22 @@ struct EventsView: View {
                         }
                     }
                     .padding(12)
+                }
+                if showCleared {
+                    Divider()
+                    HStack {
+                        Text("Showing cleared alert history")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Hide Cleared") {
+                            showCleared = false
+                        }
+                        .font(.caption2)
+                        .buttonStyle(.link)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
                 }
             }
         }
