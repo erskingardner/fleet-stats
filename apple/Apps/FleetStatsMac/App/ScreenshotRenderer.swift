@@ -406,7 +406,7 @@ enum ScreenshotRenderer {
 
         let mbpState = HostRuntimeState()
         mbpState.status = .online
-        mbpState.agentVersion = "0.1.14"
+        mbpState.agentVersion = "0.1.15"
         mbpState.lastSeenAt = Date()
         mbpState.snapshot = decodeSnapshot(makeMacBookSnapshotJSON(nowMs: nowMs))
         mbpState.livePoints = makeHistory(nowMs: nowMs, cpuBase: 32, memBase: 58, netUpBase: 410_000, netDownBase: 4_350_000)
@@ -414,7 +414,7 @@ enum ScreenshotRenderer {
 
         let miniState = HostRuntimeState()
         miniState.status = .online
-        miniState.agentVersion = "0.1.14"
+        miniState.agentVersion = "0.1.15"
         miniState.lastSeenAt = Date()
         miniState.snapshot = decodeSnapshot(makeMacMiniSnapshotJSON(nowMs: nowMs))
         miniState.livePoints = makeHistory(nowMs: nowMs, cpuBase: 14, memBase: 44, netUpBase: 85_000, netDownBase: 320_000)
@@ -430,7 +430,7 @@ enum ScreenshotRenderer {
 
         let imacState = HostRuntimeState()
         imacState.status = .online
-        imacState.agentVersion = "0.1.14"
+        imacState.agentVersion = "0.1.15"
         imacState.lastSeenAt = Date()
         imacState.snapshot = decodeSnapshot(makeIMacSnapshotJSON(nowMs: nowMs))
         imacState.livePoints = makeHistory(nowMs: nowMs, cpuBase: 18, memBase: 51, netUpBase: 40_000, netDownBase: 180_000)

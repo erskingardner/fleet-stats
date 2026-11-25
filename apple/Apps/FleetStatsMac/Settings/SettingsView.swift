@@ -55,14 +55,12 @@ struct SettingsView: View {
             Divider()
             detailPane
         }
+        .ignoresSafeArea(.all, edges: .top)
         .frame(minWidth: 700, idealWidth: 760, minHeight: 500, idealHeight: 560)
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Leave comfortable space for transparent titlebar traffic lights
-            Spacer().frame(height: 28)
-
             HStack(spacing: 8) {
                 if let icon = NSApp.applicationIconImage {
                     Image(nsImage: icon)
@@ -77,8 +75,9 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 10)
+            .padding(.top, 38)
+            .padding(.bottom, 8)
 
             ForEach(SettingsPane.allCases) { pane in
                 sidebarRow(pane)
@@ -138,14 +137,14 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(selectedPane.title)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                 Text(selectedPane.subtitle)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 24)
-            .padding(.bottom, 14)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
 
             Divider()
 

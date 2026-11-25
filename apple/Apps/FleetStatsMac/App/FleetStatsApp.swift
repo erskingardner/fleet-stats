@@ -113,19 +113,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showSettingsWindow(pane: SettingsPane = .fleet) {
         NSApp.activate(ignoringOtherApps: true)
         if let win = settingsWindow {
-            win.contentViewController = NSHostingController(
+            let hosting = NSHostingController(
                 rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
             )
+            hosting.safeAreaRegions = []
+            win.contentViewController = hosting
             win.makeKeyAndOrderFront(nil)
             return
         }
         let hosting = NSHostingController(
             rootView: SettingsView(store: store, supervisor: supervisor, updater: updater, selectedPane: pane)
         )
+        hosting.safeAreaRegions = []
         let win = NSWindow(contentViewController: hosting)
         win.title = "FleetStats Settings"
         win.titleVisibility = .hidden
         win.titlebarAppearsTransparent = true
+        win.isMovableByWindowBackground = true
         win.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         win.setContentSize(NSSize(width: 760, height: 560))
         win.minSize = NSSize(width: 700, height: 500)
