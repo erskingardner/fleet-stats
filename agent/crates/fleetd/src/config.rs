@@ -1,5 +1,5 @@
 use crate::model::AlertConfig;
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
