@@ -719,6 +719,7 @@ private struct AddMachineSheet: View {
                 selectedPeer = peer
                 name = peer.hostName
                 address = peer.preferredAddress
+                port = "\(peer.detectedPort)"
                 testResult = nil
             } label: {
                 HStack(spacing: 8) {
@@ -731,7 +732,8 @@ private struct AddMachineSheet: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(peer.hostName)
                             .font(.system(size: 11.5, weight: .medium))
-                        Text("\(peer.ipv4) · \(peer.os)")
+                        let portSuffix = (peer.fleetdDetected && peer.detectedPort != 9470) ? ":\(peer.detectedPort)" : ""
+                        Text("\(peer.ipv4)\(portSuffix) · \(peer.os)")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
@@ -751,11 +753,10 @@ private struct AddMachineSheet: View {
                     .background(Color.secondary.opacity(0.14), in: Capsule())
             } else if peer.fleetdStatus == .ready {
                 Button("+ Add") {
-                    let finalPort = Int(port) ?? 9470
                     _ = store.addHost(
                         name: peer.hostName,
                         address: peer.preferredAddress,
-                        port: finalPort,
+                        port: peer.detectedPort,
                         token: ""
                     )
                 }

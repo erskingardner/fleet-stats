@@ -136,6 +136,12 @@ if [ "$OS" = "linux" ]; then
     exit 1
   fi
 
+  if systemctl is-active --quiet fleetd.service 2>/dev/null; then
+    echo "==> Stopping existing fleetd service..."
+    systemctl kill -s KILL fleetd.service 2>/dev/null || true
+    systemctl stop fleetd.service 2>/dev/null || true
+  fi
+
   echo "==> Installing /usr/local/bin/fleetd..."
   install -m 0755 "${TMP_DIR}/${ASSET}" /usr/local/bin/fleetd
 
@@ -179,6 +185,7 @@ Type=simple
 ExecStart=/usr/local/bin/fleetd --config /etc/fleetd/config.toml serve
 Restart=always
 RestartSec=3
+TimeoutStopSec=5
 User=fleetd
 Group=fleetd
 UMask=0077

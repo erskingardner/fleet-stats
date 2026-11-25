@@ -241,22 +241,46 @@ pub fn detect_tailscale_ips() -> Vec<IpAddr> {
     found
 }
 
-/// Resolve `bind` string into concrete socket addresses.
-/// `"tailscale:9470"` binds `127.0.0.1:9470` plus every active Tailscale interface IP
-/// on port `9470`, never exposing LAN or public NICs.
+/// Resolve `bind` string (supports comma-separated specs) into concrete socket addresses.
+/// - `"tailscale:9470"` binds `127.0.0.1:9470` plus every active Tailscale interface IP on port `9470`.
+/// - `"tailscale-only:9470"` binds only active Tailscale interface IPs on port `9470` (useful when
+///   loopback uses a separate per-user port like `"127.0.0.1:9472,tailscale-only:9470"`).
 pub fn resolve_bind_addresses(bind: &str) -> Vec<String> {
-    if let Some(port_str) = bind.strip_prefix("tailscale:") {
-        let mut addrs = vec![format!("127.0.0.1:{port_str}")];
-        for ip in detect_tailscale_ips() {
-            match ip {
-                IpAddr::V4(v4) => addrs.push(format!("{v4}:{port_str}")),
-                IpAddr::V6(v6) => addrs.push(format!("[{v6}]:{port_str}")),
-            }
+    let mut addrs = Vec::new();
+    for raw_part in bind.split(',') {
+        let part = raw_part.trim();
+        if part.is_empty() {
+            continue;
         }
-        addrs
-    } else {
-        vec![bind.to_string()]
+        if let Some(port_str) = part.strip_prefix("tailscale:") {
+            let lo = format!("127.0.0.1:{port_str}");
+            if !addrs.contains(&lo) {
+                addrs.push(lo);
+            }
+            for ip in detect_tailscale_ips() {
+                let addr = match ip {
+                    IpAddr::V4(v4) => format!("{v4}:{port_str}"),
+                    IpAddr::V6(v6) => format!("[{v6}]:{port_str}"),
+                };
+                if !addrs.contains(&addr) {
+                    addrs.push(addr);
+                }
+            }
+        } else if let Some(port_str) = part.strip_prefix("tailscale-only:") {
+            for ip in detect_tailscale_ips() {
+                let addr = match ip {
+                    IpAddr::V4(v4) => format!("{v4}:{port_str}"),
+                    IpAddr::V6(v6) => format!("[{v6}]:{port_str}"),
+                };
+                if !addrs.contains(&addr) {
+                    addrs.push(addr);
+                }
+            }
+        } else if !addrs.contains(&part.to_string()) {
+            addrs.push(part.to_string());
+        }
     }
+    addrs
 }
 
 impl Default for AgentConfig {

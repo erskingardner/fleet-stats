@@ -16,6 +16,7 @@ struct DiscoveredTailscalePeer: Identifiable, Sendable, Equatable {
     let os: String
     let isOnline: Bool
     var fleetdStatus: PeerFleetdStatus
+    var detectedPort: Int
 
     var fleetdDetected: Bool {
         fleetdStatus != .none
@@ -70,13 +71,22 @@ enum TailscaleDiscovery {
             }
         }.value
 
-        // Probe online peers in parallel to detect running fleetd instances (200 ready / 401 token)
+        // Probe online peers in parallel across 9470..9475 (handles multi-user Macs where
+        // Fast User Switching shifts the local helper port above 9470).
+        var candidatePorts = [port]
+        for p in 9470...9475 where !candidatePorts.contains(p) {
+            candidatePorts.append(p)
+        }
+        let portsToProbe = candidatePorts
+
         return await withTaskGroup(of: DiscoveredTailscalePeer.self) { group in
             for peer in rawPeers {
                 group.addTask {
                     var updated = peer
                     if peer.isOnline {
-                        updated.fleetdStatus = await probeFleetd(ip: peer.ipv4, port: port)
+                        let (status, foundPort) = await probeFleetdPorts(ip: peer.ipv4, ports: portsToProbe)
+                        updated.fleetdStatus = status
+                        updated.detectedPort = foundPort
                     }
                     return updated
                 }
@@ -101,6 +111,39 @@ enum TailscaleDiscovery {
         case .ready: 0
         case .requiresToken: 1
         case .none: peer.isOnline ? 2 : 3
+        }
+    }
+
+    private static func probeFleetdPorts(ip: String, ports: [Int]) async -> (PeerFleetdStatus, Int) {
+        let defaultPort = ports.first ?? 9470
+        guard !ip.isEmpty else { return (.none, defaultPort) }
+
+        return await withTaskGroup(of: (Int, PeerFleetdStatus).self) { group in
+            for p in ports {
+                group.addTask {
+                    let st = await probeFleetd(ip: ip, port: p)
+                    return (p, st)
+                }
+            }
+            var bestReady: Int?
+            var bestToken: Int?
+            for await (p, st) in group {
+                switch st {
+                case .ready:
+                    bestReady = min(bestReady ?? p, p)
+                case .requiresToken:
+                    bestToken = min(bestToken ?? p, p)
+                case .none:
+                    break
+                }
+            }
+            if let readyPort = bestReady {
+                return (.ready, readyPort)
+            }
+            if let tokenPort = bestToken {
+                return (.requiresToken, tokenPort)
+            }
+            return (.none, defaultPort)
         }
     }
 
@@ -155,7 +198,8 @@ enum TailscaleDiscovery {
                 ipv4: ipv4,
                 os: os,
                 isOnline: dto.Online ?? false,
-                fleetdStatus: .none
+                fleetdStatus: .none,
+                detectedPort: 9470
             ))
         }
         return peers

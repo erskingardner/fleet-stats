@@ -28,8 +28,8 @@ targets:
       path: Apps/FleetStatsMac/Info.plist
       properties:
         CFBundleDisplayName: FleetStats
-        CFBundleShortVersionString: "0.1.12"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "0.1.13"
+        CFBundleVersion: "13"
         LSMinimumSystemVersion: "14.0"
         LSUIElement: true
         NSAppTransportSecurity:

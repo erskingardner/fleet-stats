@@ -153,8 +153,17 @@ final class LocalAgentSupervisor {
             return
         }
 
-        // Bind strictly to loopback, or loopback + Tailscale interface (never 0.0.0.0)
-        let bindSpec = exposeOnNetwork ? "tailscale:\(port)" : "127.0.0.1:\(port)"
+        // Bind strictly to loopback, or loopback + Tailscale interface (never 0.0.0.0).
+        // When another macOS user holds 127.0.0.1:9470 locally, still bind the Tailscale IP on
+        // canonical port 9470 so other machines on the Tailnet find this Mac reliably.
+        let bindSpec: String
+        if exposeOnNetwork {
+            bindSpec = (port == preferredPort)
+                ? "tailscale:\(port)"
+                : "127.0.0.1:\(port),tailscale-only:\(preferredPort)"
+        } else {
+            bindSpec = "127.0.0.1:\(port)"
+        }
         let proc = Process()
         proc.executableURL = binURL
         var args = [
