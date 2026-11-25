@@ -34,6 +34,7 @@ final class AppUpdater {
     var phase: UpdatePhase = .idle
     var lastCheckedAt: Date?
     var dismissedVersionTag: String?
+    var lastFetchedReleaseVersion: SemanticVersion?
 
     var autoCheckEnabled: Bool {
         didSet {
@@ -69,6 +70,23 @@ final class AppUpdater {
             return info
         }
         return nil
+    }
+
+    /// Highest known version across this app bundle and the latest GitHub Release check.
+    var latestKnownVersion: SemanticVersion {
+        var best = currentVersion
+        if let rel = availableRelease, rel.version > best {
+            best = rel.version
+        }
+        if let fetched = lastFetchedReleaseVersion, fetched > best {
+            best = fetched
+        }
+        return best
+    }
+
+    func isAgentVersionOutdated(_ rawVersion: String?) -> Bool {
+        guard let rawVersion, let parsed = SemanticVersion(rawVersion) else { return false }
+        return parsed < latestKnownVersion
     }
 
     var shouldShowBanner: Bool {
@@ -120,6 +138,7 @@ final class AppUpdater {
             let release = try await fetchLatestRelease()
             let now = Date()
             lastCheckedAt = now
+            lastFetchedReleaseVersion = release.version
             UserDefaults.standard.set(now.timeIntervalSince1970, forKey: "updater.lastCheckedAt")
 
             if release.version > currentVersion {

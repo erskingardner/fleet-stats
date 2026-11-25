@@ -10,6 +10,7 @@ public final class HostRuntimeState {
     public var historyByWindow: [HistoryWindow: [HistoryPoint]] = [:]
     public var events: [FleetEvent] = []
     public var alertConfig: AlertConfig?
+    public var agentVersion: String?
     public var lastSeenAt: Date?
 
     public init() {}
@@ -270,6 +271,15 @@ public final class FleetStore {
         return try await client.fetchHealth(host: probe, token: token)
     }
 
+    public func refreshHealth(for hostID: UUID) async {
+        guard let host = hosts.first(where: { $0.id == hostID }),
+              let state = states[hostID] else { return }
+        let token = KeychainStore.loadToken(for: hostID) ?? ""
+        if let health = try? await client.fetchHealth(host: host, token: token) {
+            state.agentVersion = health.version
+        }
+    }
+
     public func refreshHistory(for hostID: UUID, window: HistoryWindow) async {
         guard let host = hosts.first(where: { $0.id == hostID }),
               let state = states[hostID] else { return }
@@ -337,8 +347,9 @@ public final class FleetStore {
                 }
                 let token = KeychainStore.loadToken(for: hostID) ?? ""
 
-                // Seed recent history & events once connected
+                // Seed agent version, recent history & events once connected
                 Task { [weak self] in
+                    await self?.refreshHealth(for: hostID)
                     await self?.refreshHistory(for: hostID, window: .live)
                     await self?.refreshEvents(for: hostID)
                 }

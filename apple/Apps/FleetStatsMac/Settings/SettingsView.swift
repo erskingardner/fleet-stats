@@ -152,7 +152,11 @@ struct SettingsView: View {
             Group {
                 switch selectedPane {
                 case .fleet:
-                    FleetMachinesSettingsTab(store: store)
+                    FleetMachinesSettingsTab(
+                        store: store,
+                        updater: updater,
+                        onOpenGeneralUpdates: { selectedPane = .general }
+                    )
                 case .alerts:
                     AlertRulesSettingsTab(store: store)
                 case .general:
@@ -168,9 +172,13 @@ struct SettingsView: View {
 
 private struct FleetMachinesSettingsTab: View {
     @Bindable var store: FleetStore
+    @Bindable var updater: AppUpdater
+    let onOpenGeneralUpdates: () -> Void
+
     @State private var showingAddSheet = false
     @State private var showingInstallSheet = false
     @State private var editingHostID: UUID?
+    @State private var updatingHost: FleetHostConfig?
 
     var body: some View {
         Group {
@@ -178,8 +186,11 @@ private struct FleetMachinesSettingsTab: View {
                store.hosts.contains(where: { $0.id == hostID }) {
                 MachineDetailSettingsView(
                     store: store,
+                    updater: updater,
                     hostID: hostID,
-                    onBack: { editingHostID = nil }
+                    onBack: { editingHostID = nil },
+                    onRequestRemoteUpdate: { host in updatingHost = host },
+                    onOpenGeneralUpdates: onOpenGeneralUpdates
                 )
             } else {
                 machinesListView
@@ -190,6 +201,23 @@ private struct FleetMachinesSettingsTab: View {
         }
         .sheet(isPresented: $showingInstallSheet) {
             InstallCommandSheet()
+        }
+        .sheet(item: $updatingHost) { host in
+            RemoteUpdateSheet(store: store, updater: updater, host: host)
+        }
+        .onAppear {
+            refreshVersions()
+        }
+    }
+
+    private func refreshVersions() {
+        Task {
+            if updater.lastFetchedReleaseVersion == nil {
+                await updater.checkForUpdates(userInitiated: false)
+            }
+            for host in store.hosts where host.enabled {
+                await store.refreshHealth(for: host.id)
+            }
         }
     }
 
@@ -216,55 +244,90 @@ private struct FleetMachinesSettingsTab: View {
             List {
                 ForEach(store.hosts) { host in
                     let st = store.states[host.id]
-                    Button {
-                        editingHostID = host.id
-                    } label: {
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(statusColor(for: host, state: st))
-                                .frame(width: 8, height: 8)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 6) {
-                                    Text(host.name)
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                    if host.isLocal {
-                                        Text("Local")
-                                            .font(.caption2)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 1)
-                                            .background(Color.accentColor.opacity(0.16), in: Capsule())
+                    let versionStr = st?.agentVersion
+                    let isOutdated = updater.isAgentVersionOutdated(versionStr)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            editingHostID = host.id
+                        } label: {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(statusColor(for: host, state: st))
+                                    .frame(width: 8, height: 8)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(host.name)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.primary)
+                                        if host.isLocal {
+                                            Text("Local")
+                                                .font(.caption2)
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Color.accentColor.opacity(0.16), in: Capsule())
+                                        }
+                                        if let v = versionStr, !v.isEmpty {
+                                            Text("v\(v)")
+                                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                                .foregroundStyle(isOutdated ? Color.orange : Color.secondary)
+                                                .padding(.horizontal, 5.5)
+                                                .padding(.vertical, 1)
+                                                .background(
+                                                    (isOutdated ? Color.orange.opacity(0.16) : Color.secondary.opacity(0.14)),
+                                                    in: Capsule()
+                                                )
+                                        }
+                                        if !host.enabled {
+                                            Text("Paused")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                                        }
                                     }
-                                    if !host.enabled {
-                                        Text("Paused")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 1)
-                                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                                    }
+                                    Text(machineSubtitle(host: host, state: st))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
-                                Text(machineSubtitle(host: host, state: st))
-                                    .font(.caption)
+                                Spacer()
+                                if let snap = st?.snapshot, st?.status.isOnline == true {
+                                    HStack(spacing: 8) {
+                                        Text(String(format: "CPU %.0f%%", snap.cpu.totalPct))
+                                        Text(String(format: "RAM %.0f%%", snap.memory.usedPct))
+                                    }
+                                    .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if let snap = st?.snapshot, st?.status.isOnline == true {
-                                HStack(spacing: 8) {
-                                    Text(String(format: "CPU %.0f%%", snap.cpu.totalPct))
-                                    Text(String(format: "RAM %.0f%%", snap.memory.usedPct))
                                 }
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary)
                             }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if isOutdated {
+                            Button("Update") {
+                                if host.isLocal {
+                                    onOpenGeneralUpdates()
+                                } else {
+                                    updatingHost = host
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.mini)
+                            .help("Update fleetd from v\(versionStr ?? "?") to v\(updater.latestKnownVersion.description)")
+                        }
+
+                        Button {
+                            editingHostID = host.id
+                        } label: {
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.tertiary)
                         }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.vertical, 4)
                 }
             }
             .listStyle(.inset)
@@ -302,8 +365,11 @@ private struct FleetMachinesSettingsTab: View {
 
 private struct MachineDetailSettingsView: View {
     @Bindable var store: FleetStore
+    @Bindable var updater: AppUpdater
     let hostID: UUID
     let onBack: () -> Void
+    let onRequestRemoteUpdate: (FleetHostConfig) -> Void
+    let onOpenGeneralUpdates: () -> Void
 
     @State private var name = ""
     @State private var address = ""
@@ -409,6 +475,21 @@ private struct MachineDetailSettingsView: View {
                         }
 
                         HStack {
+                            Text("fleetd Version")
+                            Spacer()
+                            let v = hostState?.agentVersion
+                            let outdated = updater.isAgentVersionOutdated(v)
+                            Text(v.map { "v\($0)" } ?? "Unknown")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(outdated ? .orange : .secondary)
+                            Button(outdated ? "Update to v\(updater.latestKnownVersion.description)" : "Remote Update…") {
+                                onRequestRemoteUpdate(host)
+                            }
+                            .controlSize(.small)
+                            .buttonStyle(.bordered)
+                        }
+
+                        HStack {
                             Button(isTesting ? "Testing…" : "Test Connection") {
                                 runConnectionTest()
                             }
@@ -429,6 +510,22 @@ private struct MachineDetailSettingsView: View {
                             Text("127.0.0.1:\(host.port)")
                                 .font(.system(size: 11.5, design: .monospaced))
                                 .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Text("fleetd Version")
+                            Spacer()
+                            let v = hostState?.agentVersion ?? updater.currentVersionString
+                            let outdated = updater.isAgentVersionOutdated(v)
+                            Text("v\(v)")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(outdated ? .orange : .secondary)
+                            if outdated {
+                                Button("Update App…") {
+                                    onOpenGeneralUpdates()
+                                }
+                                .controlSize(.small)
+                                .buttonStyle(.borderedProminent)
+                            }
                         }
                         Text("Tailscale sharing and optional bearer token settings for this Mac are in General.")
                             .font(.caption)
@@ -567,6 +664,169 @@ private struct MachineDetailSettingsView: View {
                 statusMessage = "Machine saved"
             }
             isSaving = false
+        }
+    }
+}
+
+private struct RemoteUpdateSheet: View {
+    @Bindable var store: FleetStore
+    @Bindable var updater: AppUpdater
+    let host: FleetHostConfig
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var sshUsername = ""
+    @State private var switchToZeroToken = false
+    @State private var isRunning = false
+    @State private var logOutput = ""
+    @State private var finishedSucceeded: Bool?
+    @State private var needsInteractiveAuth = false
+    @State private var copiedCommand = false
+
+    private var detectedOS: OsKind {
+        store.states[host.id]?.snapshot?.host.os ?? .linux
+    }
+
+    private var currentAgentVersion: String {
+        store.states[host.id]?.agentVersion ?? "unknown"
+    }
+
+    private var sshCommandPreview: String {
+        RemoteAgentUpdater.interactiveSSHCommand(
+            address: host.address,
+            username: sshUsername,
+            os: detectedOS,
+            switchToZeroToken: switchToZeroToken
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Update \(host.name)")
+                        .font(.headline)
+                    Text("\(host.address) · \(detectedOS == .linux ? "Linux (systemd)" : "macOS") · v\(currentAgentVersion) → v\(updater.latestKnownVersion.description)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Form {
+                TextField("SSH Username", text: $sshUsername, prompt: Text("Default (~/.ssh/config or \(NSUserName()))"))
+                if detectedOS == .linux {
+                    Toggle("Switch to zero-token Tailscale trust (--no-token)", isOn: $switchToZeroToken)
+                }
+            }
+            .formStyle(.grouped)
+
+            if !logOutput.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("UPDATE OUTPUT")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(logOutput)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(8)
+                    }
+                    .frame(height: 150)
+                    .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+
+            if let ok = finishedSucceeded {
+                HStack(spacing: 6) {
+                    Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(ok ? .green : .orange)
+                    if ok {
+                        Text("Updated! Current version: v\(store.states[host.id]?.agentVersion ?? updater.latestKnownVersion.description)")
+                            .font(.caption)
+                    } else if needsInteractiveAuth {
+                        Text("This machine requires an SSH or sudo password. Click \"Open in Terminal\" to finish interactively.")
+                            .font(.caption)
+                    } else {
+                        Text("Remote update exited with an error. You can retry via Terminal.")
+                            .font(.caption)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("Copy SSH Command") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(sshCommandPreview, forType: .string)
+                    copiedCommand = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        copiedCommand = false
+                    }
+                }
+                if copiedCommand {
+                    Text("Copied!")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+
+                Spacer()
+
+                Button("Open in Terminal") {
+                    _ = RemoteAgentUpdater.openInTerminal(
+                        address: host.address,
+                        username: sshUsername,
+                        os: detectedOS,
+                        switchToZeroToken: switchToZeroToken
+                    )
+                }
+                .buttonStyle(.bordered)
+
+                Button(isRunning ? "Updating…" : "Update via SSH") {
+                    runRemoteUpdate()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRunning)
+
+                Button("Done") { dismiss() }
+            }
+        }
+        .padding(18)
+        .frame(width: 540)
+    }
+
+    private func runRemoteUpdate() {
+        isRunning = true
+        finishedSucceeded = nil
+        needsInteractiveAuth = false
+        logOutput = "==> Connecting to \(host.address) via SSH…\n"
+        let addr = host.address
+        let user = sshUsername
+        let os = detectedOS
+        let zeroTok = switchToZeroToken
+        let hostID = host.id
+
+        Task {
+            let result = await RemoteAgentUpdater.runNonInteractiveSSHUpdate(
+                address: addr,
+                username: user,
+                os: os,
+                switchToZeroToken: zeroTok,
+                onOutput: { text in
+                    Task { @MainActor in
+                        logOutput = text
+                    }
+                }
+            )
+            logOutput = result.output.isEmpty ? logOutput : result.output
+            needsInteractiveAuth = result.needsInteractiveAuth
+            if result.succeeded {
+                // Give restarted agent a moment to bind, then re-fetch its version
+                try? await Task.sleep(for: .seconds(2))
+                await store.refreshHealth(for: hostID)
+            }
+            finishedSucceeded = result.succeeded
+            isRunning = false
         }
     }
 }
