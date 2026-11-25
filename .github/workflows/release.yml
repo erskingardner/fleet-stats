@@ -1,0 +1,138 @@
+name: Release FleetStats & fleetd
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build fleetd Linux (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            linker: ""
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            linker: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl cross tools
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            sudo apt-get install -y musl-tools
+          else
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build static fleetd
+        working-directory: agent
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.linker }}
+          CC_aarch64_unknown_linux_musl: ${{ matrix.linker }}
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p ../artifacts
+          cp target/${{ matrix.target }}/release/fleetd ../artifacts/fleetd-linux-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fleetd-linux-${{ matrix.arch }}
+          path: artifacts/fleetd-linux-${{ matrix.arch }}
+
+  build-macos:
+    name: Build Universal macOS fleetd & FleetStats.dmg
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust & XcodeGen
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          brew install xcodegen
+
+      - name: Import Developer ID certificate (optional)
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "temp-keychain-pass" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "temp-keychain-pass" "$KEYCHAIN_PATH"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "temp-keychain-pass" "$KEYCHAIN_PATH"
+
+      - name: Build Universal fleetd & FleetStats.dmg
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-dmg.sh
+
+      - name: Notarize & staple DMG (optional)
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || '8Z6Q2LZ77W' }}
+        run: |
+          xcrun notarytool submit dist/FleetStats.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple dist/FleetStats.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: |
+            dist/FleetStats.dmg
+            dist/fleetd-darwin-universal
+            dist/fleetd-darwin-arm64
+            dist/fleetd-darwin-x86_64
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: release-files
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" release-files/* \
+            --title "FleetStats $TAG" \
+            --generate-notes \
+            --clobber

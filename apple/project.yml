@@ -1,0 +1,67 @@
+name: FleetStats
+options:
+  bundleIdPrefix: com.paper-robin
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: false
+
+packages:
+  FleetKit:
+    path: Packages/FleetKit
+
+targets:
+  FleetStats:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Apps/FleetStatsMac
+        excludes:
+          - Resources/Helpers/**
+          - Info.plist
+          - FleetStats.entitlements
+    info:
+      path: Apps/FleetStatsMac/Info.plist
+    entitlements:
+      path: Apps/FleetStatsMac/FleetStats.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: FleetStats
+        PRODUCT_BUNDLE_IDENTIFIER: com.paper-robin.fleetstats
+        DEVELOPMENT_TEAM: 8Z6Q2LZ77W
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "-"
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          ARCHS: "arm64 x86_64"
+          ONLY_ACTIVE_ARCH: NO
+          ENABLE_HARDENED_RUNTIME: YES
+    dependencies:
+      - package: FleetKit
+    postBuildScripts:
+      - name: Bundle fleetd Helper
+        basedOnDependencyAnalysis: false
+        script: |
+          HELPER_SRC="${PROJECT_DIR}/Apps/FleetStatsMac/Resources/Helpers/fleetd"
+          HELPER_DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
+          mkdir -p "$HELPER_DST"
+          if [ -f "$HELPER_SRC" ]; then
+            cp -f "$HELPER_SRC" "$HELPER_DST/fleetd"
+            chmod 755 "$HELPER_DST/fleetd"
+            if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${EXPANDED_CODE_SIGN_IDENTITY}" != "-" ]; then
+              /usr/bin/codesign --force --options runtime --timestamp --sign "${EXPANDED_CODE_SIGN_IDENTITY}" "$HELPER_DST/fleetd"
+            else
+              /usr/bin/codesign --force --sign - "$HELPER_DST/fleetd"
+            fi
+          else
+            echo "warning: fleetd binary not found at $HELPER_SRC — run scripts/build-agent.sh first"
+          fi

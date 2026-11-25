@@ -1,0 +1,25 @@
+# Rust
+target/
+**/target/
+
+# Swift / Xcode
+.build/
+**/.build/
+apple/build/
+*.xcodeproj/
+DerivedData/
+*.xcscmblueprint
+*.xccheckout
+.swiftpm/
+apple/Apps/FleetStatsMac/Resources/Helpers/fleetd
+
+# macOS
+.DS_Store
+*.swp
+
+# Local runtime / secrets / DB
+*.db
+*.db-shm
+*.db-wal
+config.local.toml
+dist/

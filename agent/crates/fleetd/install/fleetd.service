@@ -1,0 +1,27 @@
+[Unit]
+Description=FleetStats Telemetry Agent (fleetd)
+Documentation=https://github.com/fleet-stats/fleet-stats
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fleetd --config /etc/fleetd/config.toml serve
+Restart=always
+RestartSec=3
+
+# Run unprivileged with minimal capabilities for full process I/O & kernel OOM logs
+User=fleetd
+Group=fleetd
+StateDirectory=fleetd
+ConfigurationDirectory=fleetd
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYSLOG
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
