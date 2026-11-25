@@ -30,6 +30,10 @@ if security find-identity -v -p codesigning | grep -Fq "$SIGN_IDENTITY"; then
     "OTHER_CODE_SIGN_FLAGS=--timestamp --options runtime"
   )
 else
+  if [[ "${REQUIRE_SIGNING:-0}" == "1" ]]; then
+    echo "ERROR: Required Developer ID certificate not found: $SIGN_IDENTITY" >&2
+    exit 1
+  fi
   echo "    Developer ID certificate not found in keychain; falling back to ad-hoc signing."
   SIGN_ARGS+=(
     "CODE_SIGN_IDENTITY=-"

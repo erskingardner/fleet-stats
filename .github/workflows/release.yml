@@ -60,7 +60,7 @@ jobs:
           path: artifacts/fleetd-linux-${{ matrix.arch }}
 
   build-macos:
-    name: Build Universal macOS fleetd & FleetStats.dmg
+    name: Build, Sign & Notarize macOS fleetd & FleetStats.dmg
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -70,28 +70,60 @@ jobs:
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           brew install xcodegen
 
-      - name: Import Developer ID certificate (optional)
+      - name: Import Developer ID certificate & Apple G2 CA
         if: ${{ secrets.MACOS_CERT_P12 != '' }}
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
-          security create-keychain -p "temp-keychain-pass" "$KEYCHAIN_PATH"
+          KEYCHAIN_PASS="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "temp-keychain-pass" "$KEYCHAIN_PATH"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -k "temp-keychain-pass" "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-      - name: Build Universal fleetd & FleetStats.dmg
+          # Import Apple Developer ID G2 Intermediate CA so codesign chain validates cleanly
+          curl -fsSL "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer" -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -P "$MACOS_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH" \
+            -T /usr/bin/codesign -T /usr/bin/security
+
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build Universal fleetd & signed FleetStats.dmg
+        env:
+          REQUIRE_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' && '1' || '0' }}
         run: |
           chmod +x scripts/*.sh
           ./scripts/build-dmg.sh
 
-      - name: Notarize & staple DMG (optional)
-        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+      - name: Notarize & staple DMG (App Store Connect API Key)
+        if: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool submit dist/FleetStats.dmg \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple dist/FleetStats.dmg
+          xcrun stapler validate dist/FleetStats.dmg
+
+      - name: Notarize & staple DMG (Apple ID + App-Specific Password)
+        if: ${{ secrets.APPLE_API_KEY_P8 == '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -103,6 +135,7 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --wait
           xcrun stapler staple dist/FleetStats.dmg
+          xcrun stapler validate dist/FleetStats.dmg
 
       - uses: actions/upload-artifact@v4
         with:
