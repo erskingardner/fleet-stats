@@ -172,7 +172,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release create "$TAG" release-files/* \
-            --title "FleetStats $TAG" \
-            --generate-notes \
-            --clobber
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-files/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" release-files/* -R "$GITHUB_REPOSITORY" \
+              --title "FleetStats $TAG" \
+              --generate-notes
+          fi
