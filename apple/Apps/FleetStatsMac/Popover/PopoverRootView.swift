@@ -91,6 +91,7 @@ struct PopoverRootView: View {
                             .offset(x: -2, y: 2)
                     }
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Alerts & OOM Events")
@@ -100,6 +101,7 @@ struct PopoverRootView: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Settings")
@@ -146,6 +148,7 @@ struct PopoverRootView: View {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : .clear, lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -170,6 +173,7 @@ struct PopoverRootView: View {
                             .fill(isSelected ? Color.primary.opacity(0.1) : .clear)
                     )
                     .foregroundStyle(isSelected ? .primary : .secondary)
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -333,6 +337,7 @@ struct PopoverRootView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Dismiss alert")
@@ -378,6 +383,8 @@ struct PopoverRootView: View {
                 Image(systemName: "power")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Quit FleetStats")

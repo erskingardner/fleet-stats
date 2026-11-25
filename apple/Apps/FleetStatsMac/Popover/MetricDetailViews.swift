@@ -22,6 +22,7 @@ struct HistoryWindowPicker: View {
                                 .fill(selection == w ? Color.primary.opacity(0.12) : .clear)
                         )
                         .foregroundStyle(selection == w ? .primary : .secondary)
+                        .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
