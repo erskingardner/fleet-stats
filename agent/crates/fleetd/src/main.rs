@@ -7,9 +7,10 @@ mod storage;
 
 use alerts::AlertEngine;
 use clap::{Parser, Subcommand};
-use config::{AgentConfig, default_config_path};
+use config::{AgentConfig, default_config_path, resolve_bind_addresses};
 use model::StreamMessage;
 use server::AppState;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,22 +37,25 @@ struct Cli {
 enum Commands {
     /// Run the telemetry daemon (default)
     Serve {
-        /// Override bind address (e.g. 127.0.0.1:9470 or 0.0.0.0:9470)
+        /// Override bind address (e.g. 127.0.0.1:9470 or tailscale:9470)
         #[arg(long)]
         bind: Option<String>,
-        /// Override bearer token
+        /// Override bearer token (prefer FLEETD_TOKEN env var to avoid ps exposure)
         #[arg(long)]
         token: Option<String>,
         /// Override SQLite database path
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Allow non-Tailscale/non-loopback peers (disabled by default)
+        #[arg(long, default_value_t = false)]
+        allow_non_tailscale: bool,
     },
     /// Initialize config file and print the generated bearer token
     Init {
-        /// Bind address to write into config.toml
-        #[arg(long, default_value = "0.0.0.0:9470")]
+        /// Bind address to write into config.toml (default: tailscale:9470)
+        #[arg(long, default_value = "tailscale:9470")]
         bind: String,
-        /// Explicit token (auto-generated if omitted)
+        /// Explicit token (prefer FLEETD_TOKEN env var; auto-generated if omitted)
         #[arg(long)]
         token: Option<String>,
     },
@@ -72,16 +76,21 @@ async fn main() {
 
     let cli = Cli::parse();
     let cfg_path = cli.config.unwrap_or_else(default_config_path);
+    let env_token = std::env::var("FLEETD_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty());
 
     match cli.command.unwrap_or(Commands::Serve {
         bind: None,
         token: None,
         db: None,
+        allow_non_tailscale: false,
     }) {
         Commands::Init { bind, token } => {
             let mut cfg = AgentConfig::load_or_create(&cfg_path).unwrap_or_default();
             cfg.bind = bind;
-            if let Some(t) = token {
+            cfg.tailscale_only = true;
+            if let Some(t) = env_token.or(token) {
                 cfg.token = t;
             }
             if let Err(e) = cfg.save(&cfg_path) {
@@ -109,7 +118,12 @@ async fn main() {
                 serde_json::to_string_pretty(&res.snapshot).unwrap_or_default()
             );
         }
-        Commands::Serve { bind, token, db } => {
+        Commands::Serve {
+            bind,
+            token,
+            db,
+            allow_non_tailscale,
+        } => {
             let mut cfg = match AgentConfig::load_or_create(&cfg_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -120,11 +134,18 @@ async fn main() {
             if let Some(b) = bind {
                 cfg.bind = b;
             }
-            if let Some(t) = token {
+            if let Some(t) = env_token.or(token) {
                 cfg.token = t;
             }
             if let Some(d) = db {
                 cfg.db_path = d;
+            }
+            if allow_non_tailscale {
+                cfg.tailscale_only = false;
+            }
+            if cfg.token.trim().len() < 24 {
+                error!("Refusing to start with a bearer token shorter than 24 characters");
+                std::process::exit(1);
             }
 
             if let Err(e) = run_server(cfg, cfg_path).await {
@@ -153,7 +174,8 @@ async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String
     let _ = platform_collector.collect();
 
     let (tx, _) = broadcast::channel::<StreamMessage>(64);
-    let bind_addr = cfg.bind.clone();
+    let bind_addrs = resolve_bind_addresses(&cfg.bind);
+    let tailscale_only = cfg.tailscale_only;
     let interval_secs = cfg.sample_interval_secs.max(1);
     let alert_engine = Mutex::new(AlertEngine::new(cfg.alerts.clone()));
 
@@ -164,6 +186,7 @@ async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String
         storage: storage.clone(),
         alert_engine,
         tx: tx.clone(),
+        sse_slots: AppState::new_sse_semaphore(),
     });
 
     // Background telemetry sampler loop
@@ -213,21 +236,51 @@ async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String
         }
     });
 
-    let app = server::router(state.clone());
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .map_err(|e| format!("failed binding {bind_addr}: {e}"))?;
+    let mut listeners = Vec::new();
+    for addr in &bind_addrs {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => {
+                info!(
+                    bind = %addr,
+                    tailscale_only = tailscale_only,
+                    version = env!("CARGO_PKG_VERSION"),
+                    "fleetd listening"
+                );
+                listeners.push(l);
+            }
+            Err(e) => {
+                warn!(bind = %addr, error = %e, "failed binding address");
+            }
+        }
+    }
 
-    info!(
-        bind = %bind_addr,
-        version = env!("CARGO_PKG_VERSION"),
-        "fleetd listening"
-    );
+    if listeners.is_empty() {
+        return Err(format!("failed binding any address from {bind_addrs:?}"));
+    }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| format!("server error: {e}"))?;
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    let mut handles = Vec::new();
+    for listener in listeners {
+        let app = server::router(state.clone());
+        let mut rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = rx.recv().await;
+            })
+            .await
+            .map_err(|e| format!("server error: {e}"))
+        }));
+    }
+
+    shutdown_signal().await;
+    let _ = shutdown_tx.send(());
+    for h in handles {
+        let _ = h.await;
+    }
 
     storage.mark_clean_shutdown();
     info!("fleetd shut down cleanly");

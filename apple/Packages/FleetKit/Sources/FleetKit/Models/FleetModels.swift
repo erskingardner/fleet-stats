@@ -409,9 +409,10 @@ public struct FleetHostConfig: Codable, Sendable, Identifiable, Equatable {
     public var baseURL: URL? {
         let trimmed = address
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "http://", with: "")
-            .replacingOccurrences(of: "https://", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if trimmed.hasPrefix("https://") || trimmed.hasPrefix("http://") {
+            return URL(string: trimmed)
+        }
         if trimmed.contains(":") && !trimmed.hasPrefix("[") {
             return URL(string: "http://\(trimmed)")
         }

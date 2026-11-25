@@ -87,3 +87,18 @@ import Testing
     #expect(ByteFormatters.compactMenuRate(snap.network.uploadBps) == "30 KB/s")
     #expect(ByteFormatters.compactMenuRate(snap.network.downloadBps) == "571 KB/s")
 }
+
+@Test func plaintextHostPolicy() {
+    #expect(FleetClient.isAllowedPlaintextHost("127.0.0.1"))
+    #expect(FleetClient.isAllowedPlaintextHost("localhost"))
+    #expect(FleetClient.isAllowedPlaintextHost("100.109.43.46"))
+    #expect(FleetClient.isAllowedPlaintextHost("fd7a:115c:a1e0::1"))
+    #expect(FleetClient.isAllowedPlaintextHost("linux-tower"))
+    #expect(FleetClient.isAllowedPlaintextHost("linux-tower.tail1234.ts.net"))
+
+    // Public domains and non-Tailscale IPs must NOT allow plaintext HTTP
+    #expect(!FleetClient.isAllowedPlaintextHost("example.com"))
+    #expect(!FleetClient.isAllowedPlaintextHost("8.8.8.8"))
+    #expect(!FleetClient.isAllowedPlaintextHost("192.168.1.10"))
+    #expect(!FleetClient.isAllowedPlaintextHost("10.0.0.5"))
+}

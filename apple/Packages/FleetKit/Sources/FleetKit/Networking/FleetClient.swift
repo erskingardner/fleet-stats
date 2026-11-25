@@ -2,6 +2,7 @@ import Foundation
 
 public enum FleetClientError: Error, LocalizedError, Sendable {
     case invalidURL
+    case insecureRemoteHost(String)
     case unauthorized
     case httpStatus(Int)
     case network(String)
@@ -9,6 +10,8 @@ public enum FleetClientError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidURL: "Invalid host address"
+        case .insecureRemoteHost(let host):
+            "Refusing to send bearer token over plaintext HTTP to '\(host)'. Use a Tailscale IP/MagicDNS host or https://."
         case .unauthorized: "Invalid bearer token (401)"
         case .httpStatus(let code): "HTTP error \(code)"
         case .network(let msg): msg
@@ -69,9 +72,7 @@ public final class FleetClient: Sendable {
         token: String,
         config: AlertConfig
     ) async throws -> AlertConfig {
-        guard let base = host.baseURL, let url = URL(string: "/v1/alerts/config", relativeTo: base) else {
-            throw FleetClientError.invalidURL
-        }
+        let url = try validatedURL(path: "/v1/alerts/config", host: host)
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -86,8 +87,11 @@ public final class FleetClient: Sendable {
     public func stream(host: FleetHostConfig, token: String) -> AsyncThrowingStream<StreamMessage, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                guard let base = host.baseURL, let url = URL(string: "/v1/stream", relativeTo: base) else {
-                    continuation.finish(throwing: FleetClientError.invalidURL)
+                let url: URL
+                do {
+                    url = try validatedURL(path: "/v1/stream", host: host)
+                } catch {
+                    continuation.finish(throwing: error)
                     return
                 }
                 var req = URLRequest(url: url)
@@ -121,14 +125,51 @@ public final class FleetClient: Sendable {
     }
 
     private func get<T: Decodable>(path: String, host: FleetHostConfig, token: String) async throws -> T {
-        guard let base = host.baseURL, let url = URL(string: path, relativeTo: base) else {
-            throw FleetClientError.invalidURL
-        }
+        let url = try validatedURL(path: path, host: host)
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
         try validateHTTP(response)
         return try FleetJSON.makeDecoder().decode(T.self, from: data)
+    }
+
+    /// Ensures bearer tokens are never sent over plaintext HTTP to public internet hosts.
+    /// Plaintext HTTP is permitted only for loopback, Tailscale CGNAT/ULA, `.ts.net`,
+    /// or single-label MagicDNS names; all other hosts must use `https://`.
+    public static func isAllowedPlaintextHost(_ rawHost: String) -> Bool {
+        let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+            return true
+        }
+        if host.hasSuffix(".ts.net") || host.hasSuffix(".tailscale.net") {
+            return true
+        }
+        // Tailscale IPv4 CGNAT (100.64.0.0/10)
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        if octets.count == 4 {
+            return octets[0] == 100 && (64...127).contains(octets[1])
+        }
+        // Tailscale IPv6 ULA (fd7a:115c:a1e0::/48)
+        if host.hasPrefix("fd7a:115c:a1e0:") {
+            return true
+        }
+        // Single-label MagicDNS hostname (e.g. "linux-tower", "mac-mini")
+        if !host.contains(".") && !host.contains(":") && !host.isEmpty {
+            return true
+        }
+        return false
+    }
+
+    private func validatedURL(path: String, host: FleetHostConfig) throws -> URL {
+        guard let base = host.baseURL,
+              let url = URL(string: path, relativeTo: base)?.absoluteURL,
+              let hostName = url.host else {
+            throw FleetClientError.invalidURL
+        }
+        if url.scheme == "http" && !Self.isAllowedPlaintextHost(hostName) {
+            throw FleetClientError.insecureRemoteHost(hostName)
+        }
+        return url
     }
 
     private func validateHTTP(_ response: URLResponse) throws {

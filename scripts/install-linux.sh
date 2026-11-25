@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Distro-agnostic systemd installer for Debian, Ubuntu, Arch, Fedora, etc.
+# Distro-agnostic hardened systemd installer for Debian, Ubuntu, Arch, Fedora, etc.
 # Usage: sudo ./install-linux.sh [BINARY_PATH] [BEARER_TOKEN] [BIND_ADDR]
 set -euo pipefail
 
 BIN_SRC="${1:-./fleetd}"
 TOKEN="${2:-}"
-BIND_ADDR="${3:-0.0.0.0:9470}"
+BIND_ADDR="${3:-tailscale:9470}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Please run with sudo: sudo $0 $*"
@@ -34,13 +34,8 @@ mkdir -p /etc/fleetd /var/lib/fleetd
 chown -R fleetd:fleetd /etc/fleetd /var/lib/fleetd
 chmod 0750 /etc/fleetd /var/lib/fleetd
 
-if [[ ! -f /etc/fleetd/config.toml ]]; then
-  if [[ -n "$TOKEN" ]]; then
-    /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" --token "$TOKEN"
-  else
-    /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR"
-  fi
-  # Ensure DB path points to systemd StateDirectory
+if [[ ! -f /etc/fleetd/config.toml ]] || [[ -n "$TOKEN" ]]; then
+  FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" >/dev/null
   sed -i 's|^db_path = .*|db_path = "/var/lib/fleetd/fleetd.db"|' /etc/fleetd/config.toml
   chown fleetd:fleetd /etc/fleetd/config.toml
   chmod 0600 /etc/fleetd/config.toml
@@ -59,13 +54,23 @@ Restart=always
 RestartSec=3
 User=fleetd
 Group=fleetd
+UMask=0077
 StateDirectory=fleetd
 ConfigurationDirectory=fleetd
 AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYSLOG
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+SystemCallArchitectures=native
 PrivateTmp=true
 MemoryMax=64M
 
@@ -75,9 +80,10 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now fleetd.service
+systemctl restart fleetd.service
 
 echo ""
-echo "==> fleetd is running!"
+echo "==> fleetd is running (Tailscale-only)!"
 systemctl --no-pager status fleetd.service | head -n 10
 echo ""
 echo "Bearer Token: $(/usr/local/bin/fleetd --config /etc/fleetd/config.toml print-token)"

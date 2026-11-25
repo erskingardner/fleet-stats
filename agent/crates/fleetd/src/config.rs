@@ -2,6 +2,7 @@ use crate::model::AlertConfig;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +12,11 @@ pub struct AgentConfig {
 
     #[serde(default = "default_token")]
     pub token: String,
+
+    /// When true (default), fleetd rejects any HTTP connection whose source IP is not
+    /// loopback (127.0.0.0/8, ::1) or Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48).
+    #[serde(default = "default_true")]
+    pub tailscale_only: bool,
 
     #[serde(default = "default_sample_interval")]
     pub sample_interval_secs: u64,
@@ -34,6 +40,10 @@ fn default_bind() -> String {
 
 fn default_token() -> String {
     generate_token()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_sample_interval() -> u64 {
@@ -121,11 +131,93 @@ pub fn generate_token() -> String {
     out
 }
 
+pub fn is_tailscale_ipv4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    // Tailscale uses CGNAT 100.64.0.0/10
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+pub fn is_tailscale_ipv6(ip: Ipv6Addr) -> bool {
+    let seg = ip.segments();
+    // Tailscale ULA prefix fd7a:115c:a1e0::/48
+    seg[0] == 0xfd7a && seg[1] == 0x115c && seg[2] == 0xa1e0
+}
+
+pub fn is_allowed_peer_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || is_tailscale_ipv4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return mapped.is_loopback() || is_tailscale_ipv4(mapped);
+            }
+            v6.is_loopback() || is_tailscale_ipv6(v6)
+        }
+    }
+}
+
+/// Detect local Tailscale IPv4/IPv6 addresses via POSIX `getifaddrs`.
+pub fn detect_tailscale_ips() -> Vec<IpAddr> {
+    let mut found = Vec::new();
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) == 0 && !ifap.is_null() {
+            let mut cur = ifap;
+            while !cur.is_null() {
+                let ifa = &*cur;
+                if !ifa.ifa_addr.is_null() {
+                    let family = (*ifa.ifa_addr).sa_family as i32;
+                    if family == libc::AF_INET {
+                        let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                        let v4 = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                        if is_tailscale_ipv4(v4) {
+                            let ip = IpAddr::V4(v4);
+                            if !found.contains(&ip) {
+                                found.push(ip);
+                            }
+                        }
+                    } else if family == libc::AF_INET6 {
+                        let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                        let v6 = Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+                        if is_tailscale_ipv6(v6) {
+                            let ip = IpAddr::V6(v6);
+                            if !found.contains(&ip) {
+                                found.push(ip);
+                            }
+                        }
+                    }
+                }
+                cur = ifa.ifa_next;
+            }
+            libc::freeifaddrs(ifap);
+        }
+    }
+    found
+}
+
+/// Resolve `bind` string into concrete socket addresses.
+/// `"tailscale:9470"` binds `127.0.0.1:9470` plus every active Tailscale interface IP
+/// on port `9470`, never exposing LAN or public NICs.
+pub fn resolve_bind_addresses(bind: &str) -> Vec<String> {
+    if let Some(port_str) = bind.strip_prefix("tailscale:") {
+        let mut addrs = vec![format!("127.0.0.1:{port_str}")];
+        for ip in detect_tailscale_ips() {
+            match ip {
+                IpAddr::V4(v4) => addrs.push(format!("{v4}:{port_str}")),
+                IpAddr::V6(v6) => addrs.push(format!("[{v6}]:{port_str}")),
+            }
+        }
+        addrs
+    } else {
+        vec![bind.to_string()]
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             bind: default_bind(),
             token: default_token(),
+            tailscale_only: true,
             sample_interval_secs: default_sample_interval(),
             db_path: default_db_path(),
             raw_retention_hours: default_raw_retention_hours(),
@@ -167,5 +259,27 @@ impl AgentConfig {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tailscale_peer_allowlist() {
+        assert!(is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        assert!(is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254))));
+        assert!(is_allowed_peer_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(is_allowed_peer_ip(IpAddr::V6(
+            "fd7a:115c:a1e0::1".parse().unwrap()
+        )));
+
+        // Non-Tailscale LAN & public IPs must be rejected
+        assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))));
+        assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))));
+        assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
     }
 }

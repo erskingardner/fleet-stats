@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 # FleetStats universal agent installer (Linux systemd & macOS launchd)
+# Hardened: verifies SHA-256 checksums, binds Tailscale + loopback only by default,
+# passes bearer tokens via environment variables, and sandboxes service units.
 #
 # Linux (Debian / Ubuntu / Arch / Fedora — x86_64 & arm64):
 #   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sudo sh
@@ -14,7 +16,7 @@ set -eu
 REPO="${FLEETSTATS_REPO:-erskingardner/fleet-stats}"
 VERSION="latest"
 TOKEN=""
-BIND_ADDR="0.0.0.0:9470"
+BIND_ADDR="tailscale:9470"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -69,21 +71,53 @@ else
 fi
 
 if [ "$VERSION" = "latest" ]; then
-  DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+  BASE_URL="https://github.com/${REPO}/releases/latest/download"
 else
-  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+  BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
 
+DOWNLOAD_URL="${BASE_URL}/${ASSET}"
+SUMS_URL="${BASE_URL}/SHA256SUMS.txt"
+
 TMP_DIR="$(mktemp -d)"
+chmod 0700 "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "==> Downloading ${ASSET} from ${REPO} (${VERSION})..."
-if ! curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/fleetd"; then
+echo "==> Downloading ${ASSET} & SHA256SUMS.txt from ${REPO} (${VERSION})..."
+if ! curl -fsSL --proto '=https' --tlsv1.2 "$DOWNLOAD_URL" -o "${TMP_DIR}/${ASSET}"; then
   echo "Failed to download ${DOWNLOAD_URL}" >&2
   echo "Make sure a GitHub release exists at https://github.com/${REPO}/releases" >&2
   exit 1
 fi
-chmod 0755 "${TMP_DIR}/fleetd"
+if ! curl -fsSL --proto '=https' --tlsv1.2 "$SUMS_URL" -o "${TMP_DIR}/SHA256SUMS.txt"; then
+  echo "Failed to download ${SUMS_URL} for checksum verification" >&2
+  exit 1
+fi
+
+echo "==> Verifying SHA-256 checksum..."
+EXPECTED_SHA="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1; exit }' "${TMP_DIR}/SHA256SUMS.txt")"
+if [ -z "$EXPECTED_SHA" ]; then
+  echo "ERROR: No SHA-256 entry found for ${ASSET} in SHA256SUMS.txt" >&2
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA="$(sha256sum "${TMP_DIR}/${ASSET}" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA="$(shasum -a 256 "${TMP_DIR}/${ASSET}" | awk '{ print $1 }')"
+else
+  echo "ERROR: Neither sha256sum nor shasum found to verify binary integrity" >&2
+  exit 1
+fi
+
+if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+  echo "ERROR: SHA-256 checksum mismatch for ${ASSET}!" >&2
+  echo "  Expected: ${EXPECTED_SHA}" >&2
+  echo "  Actual:   ${ACTUAL_SHA}" >&2
+  exit 1
+fi
+echo "    Checksum OK (${ACTUAL_SHA})"
+chmod 0755 "${TMP_DIR}/${ASSET}"
 
 if [ "$OS" = "linux" ]; then
   if [ "$(id -u)" -ne 0 ]; then
@@ -92,7 +126,7 @@ if [ "$OS" = "linux" ]; then
   fi
 
   echo "==> Installing /usr/local/bin/fleetd..."
-  install -m 0755 "${TMP_DIR}/fleetd" /usr/local/bin/fleetd
+  install -m 0755 "${TMP_DIR}/${ASSET}" /usr/local/bin/fleetd
 
   if ! id -u fleetd >/dev/null 2>&1; then
     echo "==> Creating system user 'fleetd'..."
@@ -109,11 +143,7 @@ if [ "$OS" = "linux" ]; then
   chmod 0750 /etc/fleetd /var/lib/fleetd
 
   if [ ! -f /etc/fleetd/config.toml ] || [ -n "$TOKEN" ]; then
-    if [ -n "$TOKEN" ]; then
-      /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" --token "$TOKEN" >/dev/null
-    else
-      /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" >/dev/null
-    fi
+    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" >/dev/null
     sed -i 's|^db_path = .*|db_path = "/var/lib/fleetd/fleetd.db"|' /etc/fleetd/config.toml
     chown fleetd:fleetd /etc/fleetd/config.toml
     chmod 0600 /etc/fleetd/config.toml
@@ -132,13 +162,23 @@ Restart=always
 RestartSec=3
 User=fleetd
 Group=fleetd
+UMask=0077
 StateDirectory=fleetd
 ConfigurationDirectory=fleetd
 AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYSLOG
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYSLOG
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+SystemCallArchitectures=native
 PrivateTmp=true
 MemoryMax=64M
 
@@ -155,26 +195,24 @@ EOF
 
   echo ""
   echo "============================================================"
-  echo "  fleetd is installed and running (systemd)!"
+  echo "  fleetd is installed and running (systemd, Tailscale-only)!"
   echo "  Host / Tailscale IP : ${TS_IP}"
-  echo "  Port                : $(echo "$BIND_ADDR" | awk -F: '{print $NF}')"
+  echo "  Bind                : ${BIND_ADDR}"
   echo "  Bearer Token        : ${FINAL_TOKEN}"
   echo "============================================================"
 else
   echo "==> Installing /usr/local/bin/fleetd (sudo may prompt for password)..."
   sudo mkdir -p /usr/local/bin
-  sudo install -m 0755 "${TMP_DIR}/fleetd" /usr/local/bin/fleetd
+  sudo install -m 0755 "${TMP_DIR}/${ASSET}" /usr/local/bin/fleetd
 
   CFG_DIR="${HOME}/Library/Application Support/FleetStats/fleetd"
+  LOG_DIR="${HOME}/Library/Logs/FleetStats"
   CFG_PATH="${CFG_DIR}/config.toml"
-  mkdir -p "$CFG_DIR"
+  mkdir -p "$CFG_DIR" "$LOG_DIR"
+  chmod 0700 "$CFG_DIR" "$LOG_DIR"
 
   if [ ! -f "$CFG_PATH" ] || [ -n "$TOKEN" ]; then
-    if [ -n "$TOKEN" ]; then
-      /usr/local/bin/fleetd --config "$CFG_PATH" init --bind "$BIND_ADDR" --token "$TOKEN" >/dev/null
-    else
-      /usr/local/bin/fleetd --config "$CFG_PATH" init --bind "$BIND_ADDR" >/dev/null
-    fi
+    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config "$CFG_PATH" init --bind "$BIND_ADDR" >/dev/null
   fi
 
   PLIST="${HOME}/Library/LaunchAgents/com.paper-robin.fleetd.plist"
@@ -197,10 +235,12 @@ else
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>Umask</key>
+    <integer>63</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/fleetd.out.log</string>
+    <string>${LOG_DIR}/fleetd.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/fleetd.err.log</string>
+    <string>${LOG_DIR}/fleetd.err.log</string>
 </dict>
 </plist>
 EOF
@@ -213,9 +253,9 @@ EOF
 
   echo ""
   echo "============================================================"
-  echo "  fleetd is installed and running (launchd)!"
+  echo "  fleetd is installed and running (launchd, Tailscale-only)!"
   echo "  Host / Tailscale IP : ${TS_IP}"
-  echo "  Port                : $(echo "$BIND_ADDR" | awk -F: '{print $NF}')"
+  echo "  Bind                : ${BIND_ADDR}"
   echo "  Bearer Token        : ${FINAL_TOKEN}"
   echo "============================================================"
 fi

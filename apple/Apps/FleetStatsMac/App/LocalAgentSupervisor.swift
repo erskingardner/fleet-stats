@@ -6,7 +6,6 @@ final class LocalAgentSupervisor {
     private var process: Process?
     private var shouldRun = false
     private let port = 9470
-    private let localTokenKey = "com.fleetstats.localAgentToken.v1"
 
     var isRunning: Bool {
         process?.isRunning ?? false
@@ -23,17 +22,16 @@ final class LocalAgentSupervisor {
         }
     }
 
+    /// Loads or generates the local agent bearer token strictly from macOS Keychain.
     func localToken(for hostID: UUID) -> String {
-        if let saved = KeychainStore.loadToken(for: hostID), !saved.isEmpty {
+        // Clean up any legacy plaintext UserDefaults token from earlier dev builds
+        UserDefaults.standard.removeObject(forKey: "com.fleetstats.localAgentToken.v1")
+
+        if let saved = KeychainStore.loadToken(for: hostID), saved.count >= 24 {
             return saved
-        }
-        if let fallback = UserDefaults.standard.string(forKey: localTokenKey), !fallback.isEmpty {
-            KeychainStore.saveToken(fallback, for: hostID)
-            return fallback
         }
         let fresh = KeychainStore.generateRandomToken()
         KeychainStore.saveToken(fresh, for: hostID)
-        UserDefaults.standard.set(fresh, forKey: localTokenKey)
         return fresh
     }
 
@@ -68,7 +66,6 @@ final class LocalAgentSupervisor {
         if FileManager.default.isExecutableFile(atPath: bundled.path) {
             return bundled
         }
-        // Dev fallback when running from Xcode without running build-agent.sh
         let devPaths = [
             "/usr/local/bin/fleetd",
             NSHomeDirectory() + "/code/fleet-stats/agent/target/release/fleetd",
@@ -87,14 +84,18 @@ final class LocalAgentSupervisor {
             return
         }
 
-        let bindHost = exposeOnNetwork ? "0.0.0.0" : "127.0.0.1"
+        // Bind strictly to loopback, or loopback + Tailscale interface (never 0.0.0.0)
+        let bindSpec = exposeOnNetwork ? "tailscale:\(port)" : "127.0.0.1:\(port)"
         let proc = Process()
         proc.executableURL = binURL
         proc.arguments = [
             "serve",
-            "--bind", "\(bindHost):\(port)",
-            "--token", token
+            "--bind", bindSpec
         ]
+        // Pass bearer token via environment variable rather than CLI args so it is not visible in `ps`
+        var env = ProcessInfo.processInfo.environment
+        env["FLEETD_TOKEN"] = token
+        proc.environment = env
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 

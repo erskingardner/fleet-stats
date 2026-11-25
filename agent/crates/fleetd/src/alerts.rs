@@ -36,6 +36,7 @@ impl AlertEngine {
     pub fn new(config: AlertConfig) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
         Self {
@@ -462,5 +463,88 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.0} {}", val, UNITS[idx])
     } else {
         format!("{:.1} {}", val, UNITS[idx])
+    }
+}
+
+/// Validate webhook targets to block SSRF against localhost, metadata IPs, or plaintext endpoints.
+pub fn validate_alert_config(cfg: &AlertConfig) -> Result<(), String> {
+    if cfg.webhooks.len() > 8 {
+        return Err("at most 8 webhooks are allowed".to_string());
+    }
+    for wh in &cfg.webhooks {
+        if wh.kind == WebhookKind::Pushover && wh.url.trim().is_empty() {
+            continue;
+        }
+        validate_webhook_url(&wh.url)?;
+    }
+    Ok(())
+}
+
+pub fn validate_webhook_url(raw: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(raw.trim())
+        .map_err(|_| format!("invalid webhook URL: {raw}"))?;
+    if parsed.scheme() != "https" {
+        return Err("webhook URLs must use https://".to_string());
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "webhook URL must include a host".to_string())?
+        .to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        return Err(format!("webhook host '{host}' is not allowed"));
+    }
+    if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<std::net::IpAddr>() {
+        if is_private_or_special_ip(ip) {
+            return Err(format!("webhook IP '{ip}' is not allowed"));
+        }
+    }
+    Ok(())
+}
+
+fn is_private_or_special_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || (o[0] == 100 && (64..=127).contains(&o[1]))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_or_special_ip(std::net::IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
+                || (seg[0] & 0xffc0) == 0xfe80 // Link-local fe80::/10
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webhook_ssrf_validation() {
+        assert!(validate_webhook_url("https://ntfy.sh/my-fleet-alerts").is_ok());
+        assert!(validate_webhook_url("https://discord.com/api/webhooks/123/abc").is_ok());
+
+        assert!(validate_webhook_url("http://ntfy.sh/my-fleet-alerts").is_err());
+        assert!(validate_webhook_url("https://127.0.0.1:8080/hook").is_err());
+        assert!(validate_webhook_url("https://localhost/hook").is_err());
+        assert!(validate_webhook_url("https://169.254.169.254/latest/meta-data/").is_err());
+        assert!(validate_webhook_url("https://10.0.0.1/internal").is_err());
+        assert!(validate_webhook_url("https://100.64.1.2/tailnet").is_err());
     }
 }

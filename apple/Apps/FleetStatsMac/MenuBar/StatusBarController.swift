@@ -88,28 +88,29 @@ struct MenuBarStripView: View {
     }
 
     private var networkColumn: some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            HStack(spacing: 4) {
+        VStack(alignment: .trailing, spacing: -1) {
+            HStack(spacing: 3) {
                 Circle()
                     .fill(Color(red: 1.0, green: 0.27, blue: 0.23))
                     .frame(width: 5, height: 5)
                 Text(ByteFormatters.compactMenuRate(snap?.network.uploadBps ?? 0))
                     .font(.system(size: 9, weight: .regular))
                     .monospacedDigit()
-                    .frame(minWidth: 52, alignment: .trailing)
+                    .frame(minWidth: 38, alignment: .trailing)
                     .lineLimit(1)
             }
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Circle()
                     .fill(Color(red: 0.12, green: 0.58, blue: 1.0))
                     .frame(width: 5, height: 5)
                 Text(ByteFormatters.compactMenuRate(snap?.network.downloadBps ?? 0))
                     .font(.system(size: 9, weight: .regular))
                     .monospacedDigit()
-                    .frame(minWidth: 52, alignment: .trailing)
+                    .frame(minWidth: 38, alignment: .trailing)
                     .lineLimit(1)
             }
         }
+        .offset(y: -1.5)
         .fixedSize()
     }
 }
