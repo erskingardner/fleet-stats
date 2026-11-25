@@ -328,36 +328,20 @@ final class AppUpdater {
         to destination: URL,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws {
-        let (bytes, response) = try await URLSession.shared.bytes(from: url)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw UpdateError.message("Failed downloading FleetStats.dmg")
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let delegate = DownloadTaskDelegate(
+                destination: destination,
+                onProgress: onProgress,
+                continuation: continuation
+            )
+            let cfg = URLSessionConfiguration.ephemeral
+            cfg.timeoutIntervalForRequest = 30
+            cfg.timeoutIntervalForResource = 300
+            let session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+            let task = session.downloadTask(with: url)
+            task.resume()
+            session.finishTasksAndInvalidate()
         }
-        let expected = response.expectedContentLength
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: destination)
-        defer { try? handle.close() }
-
-        var buffer = Data()
-        buffer.reserveCapacity(64 * 1024)
-        var totalRead: Int64 = 0
-        var lastReported: Int64 = 0
-
-        for try await byte in bytes {
-            buffer.append(byte)
-            totalRead += 1
-            if buffer.count >= 64 * 1024 {
-                try handle.write(contentsOf: buffer)
-                buffer.removeAll(keepingCapacity: true)
-                if expected > 0 && totalRead - lastReported >= 128 * 1024 {
-                    lastReported = totalRead
-                    onProgress(min(1.0, Double(totalRead) / Double(expected)))
-                }
-            }
-        }
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-        }
-        onProgress(1.0)
     }
 
     private func sha256Hex(of fileURL: URL) throws -> String {
@@ -414,6 +398,75 @@ final class AppUpdater {
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return out + "\n" + err
+    }
+}
+
+private final class DownloadTaskDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let onProgress: @Sendable (Double) -> Void
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var moveError: Error?
+
+    init(
+        destination: URL,
+        onProgress: @escaping @Sendable (Double) -> Void,
+        continuation: CheckedContinuation<Void, Error>
+    ) {
+        self.destination = destination
+        self.onProgress = onProgress
+        self.continuation = continuation
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let progress = min(1.0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        onProgress(progress)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            lock.lock()
+            moveError = UpdateError.message("Failed downloading FleetStats.dmg (HTTP \(http.statusCode))")
+            lock.unlock()
+            return
+        }
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: location, to: destination)
+            onProgress(1.0)
+        } catch {
+            lock.lock()
+            moveError = error
+            lock.unlock()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        let err = error ?? moveError
+        lock.unlock()
+
+        if let err {
+            cont?.resume(throwing: err)
+        } else {
+            cont?.resume(returning: ())
+        }
     }
 }
 
