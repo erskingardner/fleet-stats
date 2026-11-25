@@ -287,9 +287,12 @@ async fn run_server(
 
     shutdown_signal(parent_pid).await;
     let _ = shutdown_tx.send(());
-    for h in handles {
-        let _ = h.await;
-    }
+    let _ = tokio::time::timeout(Duration::from_millis(300), async {
+        for h in handles {
+            let _ = h.await;
+        }
+    })
+    .await;
 
     storage.mark_clean_shutdown();
     info!("fleetd shut down cleanly");

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PopoverRootView: View {
     @Bindable var store: FleetStore
+    let updater: AppUpdater
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
 
@@ -13,6 +14,11 @@ struct PopoverRootView: View {
         VStack(spacing: 0) {
             fleetHeaderBar
             Divider()
+
+            if updater.shouldShowBanner, let release = updater.availableRelease {
+                updateBanner(release)
+                Divider()
+            }
 
             if store.showingEvents {
                 EventsView(store: store) { hostID, tab in
@@ -271,6 +277,34 @@ struct PopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func updateBanner(_ release: AppReleaseInfo) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(.blue)
+            Text("FleetStats \(release.tagName) available")
+                .font(.system(size: 11.5, weight: .medium))
+            Spacer()
+            Button("Update") {
+                Task { await updater.installAvailableUpdate() }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.mini)
+            Button {
+                updater.dismissBanner(for: release.tagName)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.blue.opacity(0.10))
+    }
+
     private func alertBanner(
         severity: AlertSeverity,
         title: String,
@@ -339,6 +373,14 @@ struct PopoverRootView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
             }
+
+            Button(action: onQuit) {
+                Image(systemName: "power")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Quit FleetStats")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)

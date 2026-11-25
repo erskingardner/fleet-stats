@@ -8,7 +8,11 @@ struct FleetStatsApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(store: delegate.store, supervisor: delegate.supervisor)
+            SettingsView(
+                store: delegate.store,
+                supervisor: delegate.supervisor,
+                updater: delegate.updater
+            )
         }
     }
 }
@@ -18,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = FleetStore()
     let supervisor = LocalAgentSupervisor()
     let notifications = NotificationManager()
+    let updater = AppUpdater()
     private var statusBar: StatusBarController?
     private var settingsWindow: NSWindow?
 
@@ -28,6 +33,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notifications.onOpenHost = { [weak self] hostID, tab in
             self?.statusBar?.openPopover(hostID: hostID, tab: tab)
         }
+        notifications.onOpenUpdates = { [weak self] in
+            self?.showSettingsWindow()
+        }
+
+        updater.onUpdateAvailable = { [weak self] release in
+            self?.notifications.postUpdateAvailable(version: release.tagName)
+        }
+        updater.onPrepareToRelaunch = { [weak self] in
+            self?.store.stopAllStreams()
+            self?.supervisor.stop()
+        }
+        updater.startBackgroundChecks()
 
         store.onNotification = { [weak self] payload in
             Task { @MainActor in
@@ -64,8 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusBar = StatusBarController(
             store: store,
+            updater: updater,
             onOpenSettings: { [weak self] in
                 self?.showSettingsWindow()
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.showSettingsWindow()
+                Task { await self?.updater.checkForUpdates(userInitiated: true) }
             },
             onQuit: {
                 NSApp.terminate(nil)
@@ -74,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        store.stopAllStreams()
         supervisor.stop()
     }
 
@@ -84,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let hosting = NSHostingController(
-            rootView: SettingsView(store: store, supervisor: supervisor)
+            rootView: SettingsView(store: store, supervisor: supervisor, updater: updater)
         )
         let win = NSWindow(contentViewController: hosting)
         win.title = "FleetStats Settings"

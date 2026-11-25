@@ -6,6 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var store: FleetStore
     let supervisor: LocalAgentSupervisor
+    let updater: AppUpdater
 
     var body: some View {
         TabView {
@@ -15,10 +16,10 @@ struct SettingsView: View {
             AlertRulesSettingsTab(store: store)
                 .tabItem { Label("Alerts", systemImage: "bell.badge") }
 
-            GeneralSettingsTab(store: store, supervisor: supervisor)
+            GeneralSettingsTab(store: store, supervisor: supervisor, updater: updater)
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(width: 560, height: 430)
+        .frame(width: 560, height: 470)
     }
 }
 
@@ -400,6 +401,7 @@ private struct AlertRulesSettingsTab: View {
 private struct GeneralSettingsTab: View {
     let store: FleetStore
     let supervisor: LocalAgentSupervisor
+    @Bindable var updater: AppUpdater
 
     @AppStorage("menubar.showCPU") private var showCPU = true
     @AppStorage("menubar.showRAM") private var showRAM = true
@@ -410,6 +412,25 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         Form {
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $updater.autoCheckEnabled)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Current version: v\(updater.currentVersionString)")
+                            .font(.system(size: 12, weight: .medium))
+                        updateStatusSubtitle
+                    }
+                    Spacer()
+                    updateActionButton
+                }
+
+                if case .downloading(let progress) = updater.phase {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                }
+            }
+
             Section("Menu Bar Strip (Local Mac)") {
                 Toggle("Show CPU %", isOn: $showCPU)
                 Toggle("Show RAM %", isOn: $showRAM)
@@ -465,6 +486,74 @@ private struct GeneralSettingsTab: View {
         .padding(12)
         .onAppear {
             exposeLocalAgent = supervisor.exposeOnNetwork
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusSubtitle: some View {
+        switch updater.phase {
+        case .idle:
+            if let last = updater.lastCheckedAt {
+                Text("Last checked \(last, style: .relative) ago")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Checks GitHub Releases (SHA-256 + Developer ID verified)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .checking:
+            Text("Checking GitHub Releases…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .upToDate:
+            Text("You're up to date.")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .available(let rel):
+            Text("FleetStats \(rel.tagName) is available to install.")
+                .font(.caption)
+                .foregroundStyle(.blue)
+        case .downloading(let pct):
+            Text("Downloading update (\(Int(pct * 100))%)…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .verifying:
+            Text("Verifying SHA-256 checksum & Apple signature…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .installing:
+            Text("Installing update and restarting…")
+                .font(.caption)
+                .foregroundStyle(.blue)
+        case .failed(let msg):
+            Text(msg)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var updateActionButton: some View {
+        switch updater.phase {
+        case .available:
+            HStack(spacing: 6) {
+                Button("Check Again") {
+                    Task { await updater.checkForUpdates(userInitiated: true) }
+                }
+                Button("Update & Restart") {
+                    Task { await updater.installAvailableUpdate() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        case .checking, .downloading, .verifying, .installing:
+            ProgressView()
+                .controlSize(.small)
+        default:
+            Button("Check for Updates") {
+                Task { await updater.checkForUpdates(userInitiated: true) }
+            }
         }
     }
 }

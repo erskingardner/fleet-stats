@@ -125,19 +125,25 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let store: FleetStore
+    private let updater: AppUpdater
     private var hostingView: NSHostingView<AnyView>?
     private var eventMonitor: Any?
     private let onOpenSettings: () -> Void
+    private let onCheckForUpdates: () -> Void
     private let onQuit: () -> Void
     private var stripConfig = MenuBarStripConfig.load()
 
     init(
         store: FleetStore,
+        updater: AppUpdater,
         onOpenSettings: @escaping () -> Void,
+        onCheckForUpdates: @escaping () -> Void,
         onQuit: @escaping () -> Void
     ) {
         self.store = store
+        self.updater = updater
         self.onOpenSettings = onOpenSettings
+        self.onCheckForUpdates = onCheckForUpdates
         self.onQuit = onQuit
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
@@ -156,6 +162,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(
             rootView: PopoverRootView(
                 store: store,
+                updater: updater,
                 onOpenSettings: { [weak self] in
                     self?.closePopover()
                     self?.onOpenSettings()
@@ -320,6 +327,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open FleetStats", action: #selector(menuOpenPopover), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(menuCheckForUpdates), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit FleetStats", action: #selector(menuQuit), keyEquivalent: "q")
@@ -332,6 +340,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func menuOpenPopover() { showPopover() }
+    @objc private func menuCheckForUpdates() { onCheckForUpdates() }
     @objc private func menuOpenSettings() { onOpenSettings() }
     @objc private func menuQuit() { onQuit() }
 

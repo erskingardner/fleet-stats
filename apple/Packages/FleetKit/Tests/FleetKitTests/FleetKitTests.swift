@@ -121,3 +121,11 @@ import Testing
     #expect(gbPair.upValue == "0.1")
     #expect(gbPair.downValue == "1.5")
 }
+
+@Test func semanticVersionComparison() {
+    #expect(SemanticVersion("v0.1.7")! > SemanticVersion("0.1.6")!)
+    #expect(SemanticVersion("v0.2.0")! > SemanticVersion("v0.1.9")!)
+    #expect(SemanticVersion("v1.0.0")! > SemanticVersion("v0.9.9")!)
+    #expect(SemanticVersion("v0.1.7")! == SemanticVersion("0.1.7")!)
+    #expect(SemanticVersion("v0.1.7-beta.1")! == SemanticVersion("0.1.7")!)
+}

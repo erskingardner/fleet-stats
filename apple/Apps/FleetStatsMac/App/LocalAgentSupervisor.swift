@@ -62,8 +62,16 @@ final class LocalAgentSupervisor {
     func stop() {
         shouldRun = false
         if let proc = process, proc.isRunning {
+            let pid = proc.processIdentifier
             proc.terminate()
-            proc.waitUntilExit()
+            // Bounded non-blocking wait (max 250ms) so the main thread never deadlocks on quit
+            let deadline = Date().addingTimeInterval(0.25)
+            while proc.isRunning && Date() < deadline {
+                usleep(10_000)
+            }
+            if proc.isRunning {
+                Darwin.kill(pid, SIGKILL)
+            }
         }
         process = nil
     }

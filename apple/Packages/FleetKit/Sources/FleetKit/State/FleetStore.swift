@@ -194,6 +194,13 @@ public final class FleetStore {
         }
     }
 
+    public func stopAllStreams() {
+        for (_, task) in streamTasks {
+            task.cancel()
+        }
+        streamTasks.removeAll()
+    }
+
     public func addHost(name: String, address: String, port: Int, token: String) -> FleetHostConfig {
         let host = FleetHostConfig(
             name: name,
