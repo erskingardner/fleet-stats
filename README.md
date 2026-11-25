@@ -19,11 +19,11 @@ curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scri
 curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sh
 ```
 
-*(Pass `--token "fls_..."` via `sh -s -- --token "fls_..."` to use a pre-generated token from **FleetStats → Settings → Fleet → Agent Install Script**, or let the installer generate and print one.)*
+*(Zero-token Tailscale-only mode is enabled by default — `fleetd` restricts peers to Tailscale/loopback IPs and blocks all browser/DNS-rebinding requests. For shared Tailnets, pass `--require-token` or `--token "fls_..."` via `sh -s -- --require-token`.)*
 
 ## Architecture
 
-- **`agent/crates/fleetd` (Rust)**: Single native telemetry daemon (~5–10 MB RAM) with embedded SQLite ring-buffer history (2s raw for 2h + 1m rollups for 7d), sustained alert rules, Linux OOM killer & unexpected reboot forensics, optional agent-side webhooks (`ntfy`, `Pushover`, `Discord`, generic), and a bearer-token-authenticated HTTP/SSE API (`/v1/*`).
+- **`agent/crates/fleetd` (Rust)**: Single native telemetry daemon (~5–10 MB RAM) with embedded SQLite ring-buffer history (2s raw for 2h + 1m rollups for 7d), sustained alert rules, Linux OOM killer & unexpected reboot forensics, optional agent-side webhooks (`ntfy`, `Pushover`, `Discord`, generic), and a Tailscale-only HTTP/SSE API (`/v1/*`) with anti-browser guards and optional bearer-token auth.
 - **`apple/Packages/FleetKit` (Swift Package)**: Shared `macOS 14+` / `iOS 17+` models, SSE streaming client, Keychain token store, `@Observable` fleet state, and Swift Charts components ready for a future iOS companion app.
 - **`apple/Apps/FleetStatsMac` (SwiftUI + AppKit)**: Native menu bar-only app (`LSUIElement`, bundle ID `com.paper-robin.fleetstats`) that bundles and supervises a local `fleetd` helper, renders a compact clickable strip (`CPU` · `RAM` · `SSD` · `↑↓`), and provides a multi-machine popover + macOS notifications.
 

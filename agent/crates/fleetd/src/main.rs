@@ -40,27 +40,36 @@ enum Commands {
         /// Override bind address (e.g. 127.0.0.1:9470 or tailscale:9470)
         #[arg(long)]
         bind: Option<String>,
-        /// Override bearer token (prefer FLEETD_TOKEN env var to avoid ps exposure)
+        /// Optional bearer token (prefer FLEETD_TOKEN env var to avoid ps exposure)
         #[arg(long)]
         token: Option<String>,
+        /// Disable bearer token authentication for this run (Tailscale-only + anti-browser guards remain active)
+        #[arg(long, default_value_t = false)]
+        no_token: bool,
         /// Override SQLite database path
         #[arg(long)]
         db: Option<PathBuf>,
-        /// Allow non-Tailscale/non-loopback peers (disabled by default)
+        /// Allow non-Tailscale/non-loopback peers (disabled by default; requires a bearer token)
         #[arg(long, default_value_t = false)]
         allow_non_tailscale: bool,
         /// Exit automatically if the given parent PID disappears (used when bundled inside FleetStats.app)
         #[arg(long)]
         parent_pid: Option<i32>,
     },
-    /// Initialize config file and print the generated bearer token
+    /// Initialize config file (zero-token Tailscale-only mode by default)
     Init {
         /// Bind address to write into config.toml (default: tailscale:9470)
         #[arg(long, default_value = "tailscale:9470")]
         bind: String,
-        /// Explicit token (prefer FLEETD_TOKEN env var; auto-generated if omitted)
+        /// Optional explicit bearer token (prefer FLEETD_TOKEN env var)
         #[arg(long)]
         token: Option<String>,
+        /// Generate and require a bearer token (optional, for shared Tailnets)
+        #[arg(long, default_value_t = false)]
+        require_token: bool,
+        /// Clear any existing bearer token and use zero-token Tailscale-only mode
+        #[arg(long, default_value_t = false)]
+        no_token: bool,
     },
     /// Print the configured bearer token
     PrintToken,
@@ -86,16 +95,26 @@ async fn main() {
     match cli.command.unwrap_or(Commands::Serve {
         bind: None,
         token: None,
+        no_token: false,
         db: None,
         allow_non_tailscale: false,
         parent_pid: None,
     }) {
-        Commands::Init { bind, token } => {
+        Commands::Init {
+            bind,
+            token,
+            require_token,
+            no_token,
+        } => {
             let mut cfg = AgentConfig::load_or_create(&cfg_path).unwrap_or_default();
             cfg.bind = bind;
             cfg.tailscale_only = true;
-            if let Some(t) = env_token.or(token) {
+            if no_token {
+                cfg.token.clear();
+            } else if let Some(t) = env_token.or(token) {
                 cfg.token = t;
+            } else if require_token && cfg.token.trim().is_empty() {
+                cfg.token = config::generate_token();
             }
             if let Err(e) = cfg.save(&cfg_path) {
                 eprintln!("Error saving config: {e}");
@@ -103,10 +122,18 @@ async fn main() {
             }
             println!("Config written to {}", cfg_path.display());
             println!("Bind:  {}", cfg.bind);
-            println!("Token: {}", cfg.token);
+            if cfg.token.trim().is_empty() {
+                println!("Auth:  Tailscale-only (no bearer token; browser requests blocked)");
+            } else {
+                println!("Token: {}", cfg.token);
+            }
         }
         Commands::PrintToken => match AgentConfig::load_or_create(&cfg_path) {
-            Ok(cfg) => println!("{}", cfg.token),
+            Ok(cfg) => {
+                if !cfg.token.trim().is_empty() {
+                    println!("{}", cfg.token);
+                }
+            }
             Err(e) => {
                 eprintln!("Error loading config: {e}");
                 std::process::exit(1);
@@ -125,6 +152,7 @@ async fn main() {
         Commands::Serve {
             bind,
             token,
+            no_token,
             db,
             allow_non_tailscale,
             parent_pid,
@@ -139,7 +167,9 @@ async fn main() {
             if let Some(b) = bind {
                 cfg.bind = b;
             }
-            if let Some(t) = env_token.or(token) {
+            if no_token {
+                cfg.token.clear();
+            } else if let Some(t) = env_token.or(token) {
                 cfg.token = t;
             }
             if let Some(d) = db {
@@ -148,8 +178,13 @@ async fn main() {
             if allow_non_tailscale {
                 cfg.tailscale_only = false;
             }
-            if cfg.token.trim().len() < 24 {
+            let trimmed_token = cfg.token.trim();
+            if !trimmed_token.is_empty() && trimmed_token.len() < 24 {
                 error!("Refusing to start with a bearer token shorter than 24 characters");
+                std::process::exit(1);
+            }
+            if !cfg.tailscale_only && trimmed_token.is_empty() {
+                error!("Refusing to start with --allow-non-tailscale without a bearer token");
                 std::process::exit(1);
             }
 
@@ -185,6 +220,11 @@ async fn run_server(
     let (tx, _) = broadcast::channel::<StreamMessage>(64);
     let bind_addrs = resolve_bind_addresses(&cfg.bind);
     let tailscale_only = cfg.tailscale_only;
+    let auth_mode = if cfg.token.trim().is_empty() {
+        "tailscale-trust"
+    } else {
+        "bearer-token"
+    };
     let interval_secs = cfg.sample_interval_secs.max(1);
     let alert_engine = Mutex::new(AlertEngine::new(cfg.alerts.clone()));
 
@@ -252,6 +292,7 @@ async fn run_server(
                 info!(
                     bind = %addr,
                     tailscale_only = tailscale_only,
+                    auth = auth_mode,
                     version = env!("CARGO_PKG_VERSION"),
                     "fleetd listening"
                 );

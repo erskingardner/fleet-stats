@@ -55,12 +55,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start bundled local fleetd agent on an available port & connect local host
         let hostName = Host.current().localizedName ?? "This Mac"
         let existingLocalID = store.localHost?.id ?? UUID()
-        let token = supervisor.localToken(for: existingLocalID)
-        let localPort = supervisor.start(token: token)
+        let started = supervisor.start(hostID: existingLocalID)
 
-        supervisor.onPortChanged = { [weak self] newPort in
+        supervisor.onConfigurationChanged = { [weak self] newPort, newToken in
             guard let self else { return }
-            _ = self.store.ensureLocalHost(name: hostName, port: newPort, token: token)
+            let currentName = self.store.localHost?.name ?? hostName
+            _ = self.store.ensureLocalHost(name: currentName, port: newPort, token: newToken)
         }
 
         if store.localHost == nil {
@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 id: existingLocalID,
                 name: hostName,
                 address: "127.0.0.1",
-                port: localPort,
+                port: started.port,
                 isLocal: true,
                 enabled: true
             )
@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.states[local.id] = HostRuntimeState()
             store.selectedHostID = local.id
         }
-        _ = store.ensureLocalHost(name: hostName, port: localPort, token: token)
+        _ = store.ensureLocalHost(name: store.localHost?.name ?? hostName, port: started.port, token: started.token)
         store.startAllStreams()
 
         statusBar = StatusBarController(

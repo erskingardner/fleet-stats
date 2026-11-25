@@ -153,11 +153,16 @@ public final class FleetStore {
         persistClearedWatermarks()
     }
 
-    public func ensureLocalHost(name: String, port: Int = 9470, token: String) -> FleetHostConfig {
+    public func ensureLocalHost(name: String, port: Int = 9470, token: String = "") -> FleetHostConfig {
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         if let idx = hosts.firstIndex(where: \.isLocal) {
             hosts[idx].port = port
             let existing = hosts[idx]
-            KeychainStore.saveToken(token, for: existing.id)
+            if trimmedToken.isEmpty {
+                KeychainStore.deleteToken(for: existing.id)
+            } else {
+                KeychainStore.saveToken(trimmedToken, for: existing.id)
+            }
             if states[existing.id] == nil {
                 states[existing.id] = HostRuntimeState()
             }
@@ -178,7 +183,11 @@ public final class FleetStore {
         )
         hosts.insert(local, at: 0)
         states[local.id] = HostRuntimeState()
-        KeychainStore.saveToken(token, for: local.id)
+        if trimmedToken.isEmpty {
+            KeychainStore.deleteToken(for: local.id)
+        } else {
+            KeychainStore.saveToken(trimmedToken, for: local.id)
+        }
         selectedHostID = local.id
         persistHosts()
         startStreaming(host: local)
@@ -201,7 +210,7 @@ public final class FleetStore {
         streamTasks.removeAll()
     }
 
-    public func addHost(name: String, address: String, port: Int, token: String) -> FleetHostConfig {
+    public func addHost(name: String, address: String, port: Int, token: String = "") -> FleetHostConfig {
         let host = FleetHostConfig(
             name: name,
             address: address,
@@ -211,22 +220,36 @@ public final class FleetStore {
         )
         hosts.append(host)
         states[host.id] = HostRuntimeState()
-        KeychainStore.saveToken(token, for: host.id)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedToken.isEmpty {
+            KeychainStore.deleteToken(for: host.id)
+        } else {
+            KeychainStore.saveToken(trimmedToken, for: host.id)
+        }
         persistHosts()
         startStreaming(host: host)
         return host
     }
 
-    public func updateHost(_ host: FleetHostConfig, newToken: String?) {
+    public func updateHost(_ host: FleetHostConfig, newToken: String? = nil, clearToken: Bool = false) {
         guard let idx = hosts.firstIndex(where: { $0.id == host.id }) else { return }
         hosts[idx] = host
-        if let newToken, !newToken.isEmpty {
-            KeychainStore.saveToken(newToken, for: host.id)
+        if clearToken {
+            KeychainStore.deleteToken(for: host.id)
+        } else if let newToken {
+            let trimmed = newToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                KeychainStore.deleteToken(for: host.id)
+            } else {
+                KeychainStore.saveToken(trimmed, for: host.id)
+            }
         }
         persistHosts()
         stopStreaming(hostID: host.id)
         if host.enabled {
             startStreaming(host: host)
+        } else {
+            states[host.id]?.status = .offline("Monitoring paused")
         }
     }
 
@@ -242,15 +265,15 @@ public final class FleetStore {
         persistHosts()
     }
 
-    public func testConnection(address: String, port: Int, token: String) async throws -> HealthResponse {
+    public func testConnection(address: String, port: Int, token: String = "") async throws -> HealthResponse {
         let probe = FleetHostConfig(name: "Probe", address: address, port: port)
         return try await client.fetchHealth(host: probe, token: token)
     }
 
     public func refreshHistory(for hostID: UUID, window: HistoryWindow) async {
         guard let host = hosts.first(where: { $0.id == hostID }),
-              let token = KeychainStore.loadToken(for: hostID),
               let state = states[hostID] else { return }
+        let token = KeychainStore.loadToken(for: hostID) ?? ""
         do {
             let resp = try await client.fetchHistory(host: host, token: token, window: window)
             if window == .live {
@@ -267,8 +290,8 @@ public final class FleetStore {
 
     public func refreshEvents(for hostID: UUID) async {
         guard let host = hosts.first(where: { $0.id == hostID }),
-              let token = KeychainStore.loadToken(for: hostID),
               let state = states[hostID] else { return }
+        let token = KeychainStore.loadToken(for: hostID) ?? ""
         do {
             let fetched = try await client.fetchEvents(host: host, token: token, limit: 80)
             state.events = fetched
@@ -279,8 +302,8 @@ public final class FleetStore {
     }
 
     public func loadAlertConfig(for hostID: UUID) async -> AlertConfig? {
-        guard let host = hosts.first(where: { $0.id == hostID }),
-              let token = KeychainStore.loadToken(for: hostID) else { return nil }
+        guard let host = hosts.first(where: { $0.id == hostID }) else { return nil }
+        let token = KeychainStore.loadToken(for: hostID) ?? ""
         if let cfg = try? await client.fetchAlertConfig(host: host, token: token) {
             states[hostID]?.alertConfig = cfg
             return cfg
@@ -289,8 +312,8 @@ public final class FleetStore {
     }
 
     public func saveAlertConfig(_ config: AlertConfig, for hostID: UUID) async throws {
-        guard let host = hosts.first(where: { $0.id == hostID }),
-              let token = KeychainStore.loadToken(for: hostID) else { return }
+        guard let host = hosts.first(where: { $0.id == hostID }) else { return }
+        let token = KeychainStore.loadToken(for: hostID) ?? ""
         let saved = try await client.updateAlertConfig(host: host, token: token, config: config)
         states[hostID]?.alertConfig = saved
     }
@@ -312,11 +335,7 @@ public final class FleetStore {
                 guard let currentHost = self.hosts.first(where: { $0.id == hostID && $0.enabled }) else {
                     return
                 }
-                guard let token = KeychainStore.loadToken(for: hostID), !token.isEmpty else {
-                    self.states[hostID]?.status = .unauthorized
-                    try? await Task.sleep(for: .seconds(5))
-                    continue
-                }
+                let token = KeychainStore.loadToken(for: hostID) ?? ""
 
                 // Seed recent history & events once connected
                 Task { [weak self] in

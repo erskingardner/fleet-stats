@@ -1,5 +1,5 @@
 use crate::alerts::{AlertEngine, validate_alert_config};
-use crate::config::{AgentConfig, is_allowed_peer_ip};
+use crate::config::{AgentConfig, is_allowed_host_header, is_allowed_peer_ip};
 use crate::model::{
     AlertConfig, EventsResponse, HealthResponse, HostSnapshot, StreamMessage,
 };
@@ -58,6 +58,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), bearer_auth))
         .layer(middleware::from_fn_with_state(
             state.clone(),
+            browser_request_guard,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
             peer_ip_guard,
         ));
 
@@ -82,25 +86,93 @@ async fn peer_ip_guard(
     next.run(req).await
 }
 
+/// Blocks browser-originated requests (CSRF, cross-origin fetch/EventSource, form posts, and
+/// DNS-rebinding attacks) while allowing native FleetStats / CLI clients.
+async fn browser_request_guard(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let headers = req.headers();
+
+    // 1. Browsers automatically attach Origin / Referer / Sec-Fetch-* on cross-origin or page requests.
+    //    Native FleetStats clients never send these headers.
+    let has_browser_headers = headers.contains_key(header::ORIGIN)
+        || headers.contains_key(header::REFERER)
+        || headers.contains_key("sec-fetch-site")
+        || headers.contains_key("sec-fetch-mode")
+        || headers.contains_key("sec-fetch-dest");
+
+    if has_browser_headers {
+        warn!(peer = %addr.ip(), path = %req.uri().path(), "blocked browser-originated request");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "forbidden: browser requests are blocked" })),
+        )
+            .into_response();
+    }
+
+    // 2. Require explicit non-simple custom client header `X-FleetStats: 1`.
+    //    Browsers cannot attach custom headers to simple CORS/EventSource/form requests without a
+    //    CORS preflight, which fleetd denies.
+    let is_fleetstats_client = headers
+        .get("x-fleetstats")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+
+    if !is_fleetstats_client {
+        warn!(peer = %addr.ip(), path = %req.uri().path(), "blocked request missing X-FleetStats header");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "forbidden: X-FleetStats client header required" })),
+        )
+            .into_response();
+    }
+
+    // 3. Defeat DNS-rebinding attacks by verifying Host header resolves to loopback/Tailscale.
+    let tailscale_only = state.config.read().await.tailscale_only;
+    if tailscale_only {
+        if let Some(host_val) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) {
+            if !is_allowed_host_header(host_val) {
+                warn!(peer = %addr.ip(), host = %host_val, "blocked disallowed Host header");
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({ "error": "forbidden: disallowed Host header" })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    next.run(req).await
+}
+
 async fn bearer_auth(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request,
     next: Next,
 ) -> Response {
-    let expected = state.config.read().await.token.clone();
-    let authorized = !expected.is_empty()
-        && req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "))
-            .map(|provided| {
-                let a = provided.as_bytes();
-                let b = expected.as_bytes();
-                a.len() == b.len() && bool::from(a.ct_eq(b))
-            })
-            .unwrap_or(false);
+    let expected = state.config.read().await.token.trim().to_string();
+    // Optional bearer token: when unset/empty (default on private Tailnets), rely on
+    // tailscale_only peer IP allowlist + anti-browser request guard.
+    if expected.is_empty() {
+        return next.run(req).await;
+    }
+
+    let authorized = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(|provided| {
+            let a = provided.as_bytes();
+            let b = expected.as_bytes();
+            a.len() == b.len() && bool::from(a.ct_eq(b))
+        })
+        .unwrap_or(false);
 
     if !authorized {
         warn!(peer = %addr.ip(), path = %req.uri().path(), "unauthorized API request");
@@ -295,4 +367,164 @@ async fn put_alert_config(
         }
     }
     (StatusCode::OK, Json(new_cfg)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use std::net::{IpAddr, Ipv4Addr};
+    use tower::ServiceExt;
+
+    fn test_app(token: &str, tailscale_only: bool) -> Router {
+        let dir = std::env::temp_dir().join(format!(
+            "fleetd-srv-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("test.db");
+        let cfg_path = dir.join("config.toml");
+
+        let mut cfg = AgentConfig::default();
+        cfg.token = token.to_string();
+        cfg.tailscale_only = tailscale_only;
+        cfg.db_path = db_path.clone();
+
+        let storage = Arc::new(Storage::open(&db_path, 2, 7).expect("open storage"));
+        let (tx, _) = broadcast::channel::<StreamMessage>(8);
+        let state = Arc::new(AppState {
+            config: RwLock::new(cfg.clone()),
+            config_path: cfg_path,
+            latest_snapshot: RwLock::new(None),
+            storage,
+            alert_engine: Mutex::new(AlertEngine::new(cfg.alerts)),
+            tx,
+            sse_slots: AppState::new_sse_semaphore(),
+        });
+        router(state)
+    }
+
+    fn req_from(ip: IpAddr, builder: axum::http::request::Builder) -> HttpRequest<Body> {
+        let mut req = builder.body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(ip, 55000)));
+        req
+    }
+
+    #[tokio::test]
+    async fn zero_token_allows_fleetstats_client_and_blocks_browsers() {
+        let app = test_app("", true);
+        let ts_ip = IpAddr::V4(Ipv4Addr::new(100, 100, 1, 2));
+
+        // 1. Valid FleetStats client on Tailscale with no token -> allowed (503 warming up, NOT 401/403)
+        let ok_req = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "100.100.1.2:9470")
+                .header("x-fleetstats", "1"),
+        );
+        let resp = app.clone().oneshot(ok_req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // 2. Missing X-FleetStats header -> 403
+        let missing_hdr = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "100.100.1.2:9470"),
+        );
+        assert_eq!(
+            app.clone().oneshot(missing_hdr).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 3. Browser Origin header -> 403 even with X-FleetStats
+        let origin_req = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "127.0.0.1:9470")
+                .header(header::ORIGIN, "https://evil.example")
+                .header("x-fleetstats", "1"),
+        );
+        assert_eq!(
+            app.clone().oneshot(origin_req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 4. Browser Sec-Fetch-Site header -> 403
+        let fetch_req = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "127.0.0.1:9470")
+                .header("sec-fetch-site", "cross-site")
+                .header("x-fleetstats", "1"),
+        );
+        assert_eq!(
+            app.clone().oneshot(fetch_req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 5. DNS rebinding Host header -> 403
+        let rebind_req = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "evil.example:9470")
+                .header("x-fleetstats", "1"),
+        );
+        assert_eq!(
+            app.clone().oneshot(rebind_req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        // 6. Non-Tailscale LAN peer -> 403
+        let lan_req = req_from(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "127.0.0.1:9470")
+                .header("x-fleetstats", "1"),
+        );
+        assert_eq!(
+            app.oneshot(lan_req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn optional_bearer_token_enforced_when_configured() {
+        let secret = "fls_test_secret_token_1234567890abcdef";
+        let app = test_app(secret, true);
+        let ts_ip = IpAddr::V4(Ipv4Addr::new(100, 100, 1, 2));
+
+        let no_auth = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "100.100.1.2:9470")
+                .header("x-fleetstats", "1"),
+        );
+        assert_eq!(
+            app.clone().oneshot(no_auth).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let with_auth = req_from(
+            ts_ip,
+            HttpRequest::builder()
+                .uri("/v1/health")
+                .header(header::HOST, "100.100.1.2:9470")
+                .header("x-fleetstats", "1")
+                .header(header::AUTHORIZATION, format!("Bearer {secret}")),
+        );
+        assert_eq!(
+            app.oneshot(with_auth).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }

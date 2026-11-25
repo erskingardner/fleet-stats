@@ -13,7 +13,7 @@ final class LocalAgentSupervisor {
         process?.isRunning ?? false
     }
 
-    var onPortChanged: ((Int) -> Void)?
+    var onConfigurationChanged: ((Int, String) -> Void)?
 
     var exposeOnNetwork: Bool {
         get { UserDefaults.standard.bool(forKey: "com.fleetstats.exposeLocalAgent") }
@@ -26,7 +26,20 @@ final class LocalAgentSupervisor {
         }
     }
 
-    /// Loads or generates the local agent bearer token strictly from macOS Keychain.
+    /// Optional bearer token protection for the local agent (off by default on private Tailnets;
+    /// tailscale_only peer IP allowlist + anti-browser guards are always enforced).
+    var requireToken: Bool {
+        get { UserDefaults.standard.bool(forKey: "com.fleetstats.requireLocalToken") }
+        set {
+            let changed = newValue != UserDefaults.standard.bool(forKey: "com.fleetstats.requireLocalToken")
+            UserDefaults.standard.set(newValue, forKey: "com.fleetstats.requireLocalToken")
+            if changed && shouldRun {
+                restart()
+            }
+        }
+    }
+
+    /// Loads or generates the optional local agent bearer token strictly from macOS Keychain.
     func localToken(for hostID: UUID) -> String {
         UserDefaults.standard.removeObject(forKey: "com.fleetstats.localAgentToken.v1")
 
@@ -38,23 +51,30 @@ final class LocalAgentSupervisor {
         return fresh
     }
 
+    /// Returns the active token for the local agent (empty string when zero-token Tailscale trust is enabled).
+    func effectiveToken(for hostID: UUID) -> String {
+        requireToken ? localToken(for: hostID) : ""
+    }
+
     @discardableResult
-    func start(token: String) -> Int {
+    func start(hostID: UUID) -> (port: Int, token: String) {
         shouldRun = true
-        lastToken = token
+        lastHostID = hostID
+        let tok = effectiveToken(for: hostID)
         let port = pickAvailablePort(startingAt: preferredPort)
         activePort = port
-        launchIfNeeded(token: token, port: port)
-        return port
+        launchIfNeeded(token: tok, port: port)
+        return (port, tok)
     }
 
     func restart() {
         stop()
-        if let tok = lastToken {
+        if let hostID = lastHostID {
             shouldRun = true
+            let tok = effectiveToken(for: hostID)
             let port = pickAvailablePort(startingAt: preferredPort)
             activePort = port
-            onPortChanged?(port)
+            onConfigurationChanged?(port, tok)
             launchIfNeeded(token: tok, port: port)
         }
     }
@@ -76,7 +96,7 @@ final class LocalAgentSupervisor {
         process = nil
     }
 
-    private var lastToken: String?
+    private var lastHostID: UUID?
 
     /// Finds an available TCP port on 127.0.0.1 starting at `preferredPort` (e.g. 9470, 9471, ...),
     /// preventing collisions when multiple macOS users run FleetStats simultaneously or a standalone
@@ -137,28 +157,35 @@ final class LocalAgentSupervisor {
         let bindSpec = exposeOnNetwork ? "tailscale:\(port)" : "127.0.0.1:\(port)"
         let proc = Process()
         proc.executableURL = binURL
-        proc.arguments = [
+        var args = [
             "serve",
             "--bind", bindSpec,
             "--parent-pid", "\(ProcessInfo.processInfo.processIdentifier)"
         ]
-        // Pass bearer token via environment variable rather than CLI args so it is not visible in `ps`
         var env = ProcessInfo.processInfo.environment
-        env["FLEETD_TOKEN"] = token
+        if token.isEmpty {
+            args.append("--no-token")
+            env.removeValue(forKey: "FLEETD_TOKEN")
+        } else {
+            // Pass bearer token via environment variable rather than CLI args so it is not visible in `ps`
+            env["FLEETD_TOKEN"] = token
+        }
+        proc.arguments = args
         proc.environment = env
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
         proc.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.shouldRun, let tok = self.lastToken else { return }
+                guard let self, self.shouldRun, let hostID = self.lastHostID else { return }
                 self.process = nil
                 try? await Task.sleep(for: .seconds(2))
                 if self.shouldRun {
+                    let tok = self.effectiveToken(for: hostID)
                     let nextPort = self.pickAvailablePort(startingAt: self.preferredPort)
                     if nextPort != self.activePort {
                         self.activePort = nextPort
-                        self.onPortChanged?(nextPort)
+                        self.onConfigurationChanged?(nextPort, tok)
                     }
                     self.launchIfNeeded(token: tok, port: nextPort)
                 }

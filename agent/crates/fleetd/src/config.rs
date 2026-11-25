@@ -10,7 +10,10 @@ pub struct AgentConfig {
     #[serde(default = "default_bind")]
     pub bind: String,
 
-    #[serde(default = "default_token")]
+    /// Optional bearer token. Empty (default) uses Tailscale-only peer IP + anti-browser
+    /// request guards with zero token friction on a personal Tailnet. Set a 24+ char token
+    /// to enforce Bearer auth (required if `tailscale_only` is false).
+    #[serde(default)]
     pub token: String,
 
     /// When true (default), fleetd rejects any HTTP connection whose source IP is not
@@ -36,10 +39,6 @@ pub struct AgentConfig {
 
 fn default_bind() -> String {
     "127.0.0.1:9470".to_string()
-}
-
-fn default_token() -> String {
-    generate_token()
 }
 
 fn default_true() -> bool {
@@ -155,6 +154,54 @@ pub fn is_allowed_peer_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Validates the HTTP `Host` header against DNS-rebinding attacks when `tailscale_only` is active.
+/// Allows loopback, Tailscale IPs, `*.ts.net` / `*.tailscale.net`, and single-label MagicDNS names.
+pub fn is_allowed_host_header(raw_host: &str) -> bool {
+    let trimmed = raw_host.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_whitespace() || c == '/' || c == '\\') {
+        return false;
+    }
+
+    let host_only = if let Some(rest) = trimmed.strip_prefix('[') {
+        let Some((inside, after)) = rest.split_once(']') else {
+            return false;
+        };
+        if !after.is_empty() && !after.starts_with(':') {
+            return false;
+        }
+        inside
+    } else if let Some((left, right)) = trimmed.rsplit_once(':') {
+        // Distinguish host:port from unbracketed IPv6
+        if !left.contains(':') && right.chars().all(|c| c.is_ascii_digit()) {
+            left
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+
+    let lower = host_only.to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    if lower == "localhost" {
+        return true;
+    }
+    if let Ok(ip) = lower.parse::<IpAddr>() {
+        return is_allowed_peer_ip(ip);
+    }
+    if lower.ends_with(".ts.net") || lower.ends_with(".tailscale.net") {
+        return true;
+    }
+    // Single-label MagicDNS hostname (e.g. "mini", "linux-tower")
+    !lower.contains('.')
+        && !lower.contains(':')
+        && lower
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// Detect local Tailscale IPv4/IPv6 addresses via POSIX `getifaddrs`.
 pub fn detect_tailscale_ips() -> Vec<IpAddr> {
     let mut found = Vec::new();
@@ -216,7 +263,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             bind: default_bind(),
-            token: default_token(),
+            token: String::new(),
             tailscale_only: true,
             sample_interval_secs: default_sample_interval(),
             db_path: default_db_path(),
@@ -281,5 +328,23 @@ mod tests {
         assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))));
         assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!is_allowed_peer_ip(IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
+    }
+
+    #[test]
+    fn host_header_dns_rebinding_guard() {
+        assert!(is_allowed_host_header("127.0.0.1:9470"));
+        assert!(is_allowed_host_header("localhost:9470"));
+        assert!(is_allowed_host_header("[::1]:9470"));
+        assert!(is_allowed_host_header("100.109.43.46:9470"));
+        assert!(is_allowed_host_header("[fd7a:115c:a1e0::1]:9470"));
+        assert!(is_allowed_host_header("mini:9470"));
+        assert!(is_allowed_host_header("mini.tail1234.ts.net:9470"));
+
+        // External domains & LAN IPs must be rejected to defeat DNS rebinding
+        assert!(!is_allowed_host_header("evil.com:9470"));
+        assert!(!is_allowed_host_header("rebind.attacker.io"));
+        assert!(!is_allowed_host_header("192.168.1.5:9470"));
+        assert!(!is_allowed_host_header("10.0.0.5:9470"));
+        assert!(!is_allowed_host_header(""));
     }
 }

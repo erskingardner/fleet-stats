@@ -1,5 +1,13 @@
 import Foundation
 
+enum PeerFleetdStatus: Sendable, Equatable {
+    case none
+    /// fleetd responded 200 OK in zero-token Tailscale-trust mode (1-click Add!)
+    case ready
+    /// fleetd responded 401 Unauthorized (requires optional bearer token)
+    case requiresToken
+}
+
 struct DiscoveredTailscalePeer: Identifiable, Sendable, Equatable {
     let id: String
     let hostName: String
@@ -7,7 +15,11 @@ struct DiscoveredTailscalePeer: Identifiable, Sendable, Equatable {
     let ipv4: String
     let os: String
     let isOnline: Bool
-    var fleetdDetected: Bool
+    var fleetdStatus: PeerFleetdStatus
+
+    var fleetdDetected: Bool {
+        fleetdStatus != .none
+    }
 
     var preferredAddress: String {
         let trimmed = dnsName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
@@ -58,13 +70,13 @@ enum TailscaleDiscovery {
             }
         }.value
 
-        // Probe online peers in parallel to detect running fleetd instances (401/200 on :9470)
+        // Probe online peers in parallel to detect running fleetd instances (200 ready / 401 token)
         return await withTaskGroup(of: DiscoveredTailscalePeer.self) { group in
             for peer in rawPeers {
                 group.addTask {
                     var updated = peer
                     if peer.isOnline {
-                        updated.fleetdDetected = await probeFleetd(ip: peer.ipv4, port: port)
+                        updated.fleetdStatus = await probeFleetd(ip: peer.ipv4, port: port)
                     }
                     return updated
                 }
@@ -74,20 +86,27 @@ enum TailscaleDiscovery {
                 results.append(peer)
             }
             return results.sorted { lhs, rhs in
-                if lhs.fleetdDetected != rhs.fleetdDetected {
-                    return lhs.fleetdDetected && !rhs.fleetdDetected
-                }
-                if lhs.isOnline != rhs.isOnline {
-                    return lhs.isOnline && !rhs.isOnline
+                let lhsRank = sortRank(lhs)
+                let rhsRank = sortRank(rhs)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
                 }
                 return lhs.hostName.localizedCaseInsensitiveCompare(rhs.hostName) == .orderedAscending
             }
         }
     }
 
-    private static func probeFleetd(ip: String, port: Int) async -> Bool {
+    private static func sortRank(_ peer: DiscoveredTailscalePeer) -> Int {
+        switch peer.fleetdStatus {
+        case .ready: 0
+        case .requiresToken: 1
+        case .none: peer.isOnline ? 2 : 3
+        }
+    }
+
+    private static func probeFleetd(ip: String, port: Int) async -> PeerFleetdStatus {
         guard !ip.isEmpty, let url = URL(string: "http://\(ip):\(port)/v1/health") else {
-            return false
+            return .none
         }
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 1.5
@@ -97,17 +116,20 @@ enum TailscaleDiscovery {
 
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
+        req.setValue("1", forHTTPHeaderField: "X-FleetStats")
         do {
             let (data, resp) = try await session.data(for: req)
-            guard let http = resp as? HTTPURLResponse else { return false }
-            if http.statusCode == 401 {
-                if let text = String(data: data, encoding: .utf8), text.contains("unauthorized") {
-                    return true
-                }
+            guard let http = resp as? HTTPURLResponse else { return .none }
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode == 200 && text.contains("\"status\"") {
+                return .ready
             }
-            return http.statusCode == 200
+            if http.statusCode == 401 && text.contains("unauthorized") {
+                return .requiresToken
+            }
+            return .none
         } catch {
-            return false
+            return .none
         }
     }
 
@@ -133,7 +155,7 @@ enum TailscaleDiscovery {
                 ipv4: ipv4,
                 os: os,
                 isOnline: dto.Online ?? false,
-                fleetdDetected: false
+                fleetdStatus: .none
             ))
         }
         return peers

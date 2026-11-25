@@ -170,12 +170,39 @@ private struct FleetMachinesSettingsTab: View {
     @Bindable var store: FleetStore
     @State private var showingAddSheet = false
     @State private var showingInstallSheet = false
+    @State private var editingHostID: UUID?
 
     var body: some View {
+        Group {
+            if let hostID = editingHostID,
+               store.hosts.contains(where: { $0.id == hostID }) {
+                MachineDetailSettingsView(
+                    store: store,
+                    hostID: hostID,
+                    onBack: { editingHostID = nil }
+                )
+            } else {
+                machinesListView
+            }
+        }
+        .sheet(isPresented: $showingAddSheet) {
+            AddMachineSheet(store: store)
+        }
+        .sheet(isPresented: $showingInstallSheet) {
+            InstallCommandSheet()
+        }
+    }
+
+    private var machinesListView: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Monitored Machines")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Monitored Machines")
+                        .font(.headline)
+                    Text("Click any machine to rename it, edit connection settings, or tune alert thresholds.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Agent Install Script") {
                     showingInstallSheet = true
@@ -189,47 +216,357 @@ private struct FleetMachinesSettingsTab: View {
             List {
                 ForEach(store.hosts) { host in
                     let st = store.states[host.id]
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(st?.status.isOnline == true ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(host.name)
-                                    .font(.system(size: 13, weight: .semibold))
-                                if host.isLocal {
-                                    Text("Local")
-                                        .font(.caption2)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 1)
-                                        .background(Color.accentColor.opacity(0.16), in: Capsule())
+                    Button {
+                        editingHostID = host.id
+                    } label: {
+                        HStack(spacing: 10) {
+                            Circle()
+                                .fill(statusColor(for: host, state: st))
+                                .frame(width: 8, height: 8)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(host.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                    if host.isLocal {
+                                        Text("Local")
+                                            .font(.caption2)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(Color.accentColor.opacity(0.16), in: Capsule())
+                                    }
+                                    if !host.enabled {
+                                        Text("Paused")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 5)
+                                            .padding(.vertical, 1)
+                                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                                    }
                                 }
+                                Text(machineSubtitle(host: host, state: st))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
-                            Text("\(host.address):\(host.port)" + (st?.snapshot.map { " · \($0.host.osVersion) (\($0.host.arch))" } ?? ""))
-                                .font(.caption)
+                            Spacer()
+                            if let snap = st?.snapshot, st?.status.isOnline == true {
+                                HStack(spacing: 8) {
+                                    Text(String(format: "CPU %.0f%%", snap.cpu.totalPct))
+                                    Text(String(format: "RAM %.0f%%", snap.memory.usedPct))
+                                }
+                                .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if !host.isLocal {
-                            Button(role: .destructive) {
-                                store.removeHost(host.id)
-                            } label: {
-                                Image(systemName: "trash")
                             }
-                            .buttonStyle(.borderless)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.tertiary)
                         }
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.vertical, 3)
+                    .buttonStyle(.plain)
                 }
             }
             .listStyle(.inset)
         }
         .padding(16)
-        .sheet(isPresented: $showingAddSheet) {
-            AddMachineSheet(store: store)
+    }
+
+    private func statusColor(for host: FleetHostConfig, state: HostRuntimeState?) -> Color {
+        if !host.enabled { return .gray }
+        switch state?.status {
+        case .online: return .green
+        case .connecting: return .orange
+        case .unauthorized: return .orange
+        case .offline, .none: return .red
         }
-        .sheet(isPresented: $showingInstallSheet) {
-            InstallCommandSheet()
+    }
+
+    private func machineSubtitle(host: FleetHostConfig, state: HostRuntimeState?) -> String {
+        let base = "\(host.address):\(host.port)"
+        if let snap = state?.snapshot {
+            return "\(base) · \(snap.host.osVersion) (\(snap.host.arch))"
+        }
+        switch state?.status {
+        case .unauthorized:
+            return "\(base) · Token required (click to configure)"
+        case .offline(let reason):
+            return "\(base) · \(reason)"
+        case .connecting:
+            return "\(base) · Connecting…"
+        default:
+            return base
+        }
+    }
+}
+
+private struct MachineDetailSettingsView: View {
+    @Bindable var store: FleetStore
+    let hostID: UUID
+    let onBack: () -> Void
+
+    @State private var name = ""
+    @State private var address = ""
+    @State private var port = "9470"
+    @State private var enabled = true
+    @State private var token = ""
+    @State private var hasStoredToken = false
+    @State private var clearStoredToken = false
+
+    @State private var alertConfig = AlertConfig.defaults
+    @State private var alertConfigLoaded = false
+    @State private var newWebhookKind: WebhookKind = .ntfy
+    @State private var newWebhookURL = ""
+    @State private var newWebhookToken = ""
+
+    @State private var statusMessage: String?
+    @State private var statusIsError = false
+    @State private var isSaving = false
+    @State private var isTesting = false
+    @State private var testResult: String?
+    @State private var testSucceeded = false
+
+    private var host: FleetHostConfig? {
+        store.hosts.first(where: { $0.id == hostID })
+    }
+
+    private var hostState: HostRuntimeState? {
+        store.states[hostID]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Navigation header bar
+            HStack(spacing: 10) {
+                Button {
+                    onBack()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Fleet")
+                    }
+                }
+                .buttonStyle(.borderless)
+
+                Divider()
+                    .frame(height: 14)
+
+                Circle()
+                    .fill(hostState?.status.isOnline == true ? Color.green : Color.orange)
+                    .frame(width: 7.5, height: 7.5)
+
+                Text(name.isEmpty ? (host?.name ?? "Machine") : name)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .lineLimit(1)
+
+                Spacer()
+
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(statusIsError ? .red : .secondary)
+                        .lineLimit(1)
+                }
+
+                Button(isSaving ? "Saving…" : "Save") {
+                    saveAll()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving || name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            Form {
+                Section("Machine") {
+                    TextField("Display Name", text: $name)
+
+                    if let host, !host.isLocal {
+                        TextField("Tailscale Host / IP", text: $address)
+                        TextField("Port", text: $port)
+                        Toggle("Monitor this machine", isOn: $enabled)
+
+                        HStack(spacing: 8) {
+                            SecureField(
+                                "Bearer Token",
+                                text: $token,
+                                prompt: Text(
+                                    hasStoredToken && !clearStoredToken
+                                        ? "Saved in Keychain (leave blank to keep)"
+                                        : "Optional — blank uses Tailscale trust"
+                                )
+                            )
+                            if hasStoredToken && !clearStoredToken {
+                                Button("Clear") {
+                                    clearStoredToken = true
+                                    token = ""
+                                }
+                                .font(.caption)
+                            }
+                        }
+
+                        HStack {
+                            Button(isTesting ? "Testing…" : "Test Connection") {
+                                runConnectionTest()
+                            }
+                            .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty || isTesting)
+
+                            if let testResult {
+                                HStack(spacing: 4) {
+                                    Image(systemName: testSucceeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(testSucceeded ? .green : .red)
+                                    Text(testResult)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    } else if let host {
+                        LabeledContent("Local Agent") {
+                            Text("127.0.0.1:\(host.port)")
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("Tailscale sharing and optional bearer token settings for this Mac are in General.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                AlertConfigFormSections(
+                    config: $alertConfig,
+                    newWebhookKind: $newWebhookKind,
+                    newWebhookURL: $newWebhookURL,
+                    newWebhookToken: $newWebhookToken,
+                    agentReachable: alertConfigLoaded
+                )
+
+                if let host, !host.isLocal {
+                    Section {
+                        HStack {
+                            Spacer()
+                            Button("Remove Machine", role: .destructive) {
+                                store.removeHost(host.id)
+                                onBack()
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .onAppear {
+            loadMachine()
+        }
+    }
+
+    private func loadMachine() {
+        guard let host else { return }
+        name = host.name
+        address = host.address
+        port = "\(host.port)"
+        enabled = host.enabled
+        token = ""
+        let existingToken = KeychainStore.loadToken(for: host.id) ?? ""
+        hasStoredToken = !existingToken.isEmpty
+        clearStoredToken = false
+
+        statusMessage = "Loading thresholds…"
+        statusIsError = false
+        Task {
+            if let loaded = await store.loadAlertConfig(for: host.id) {
+                alertConfig = loaded
+                alertConfigLoaded = true
+                statusMessage = nil
+            } else {
+                alertConfigLoaded = false
+                statusMessage = "Agent offline (machine settings still editable)"
+            }
+        }
+    }
+
+    private func runConnectionTest() {
+        isTesting = true
+        testResult = nil
+        let p = Int(port) ?? 9470
+        let effectiveToken: String
+        if clearStoredToken {
+            effectiveToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            effectiveToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            effectiveToken = KeychainStore.loadToken(for: hostID) ?? ""
+        }
+        Task {
+            do {
+                let health = try await store.testConnection(
+                    address: address.trimmingCharacters(in: .whitespaces),
+                    port: p,
+                    token: effectiveToken
+                )
+                testSucceeded = true
+                testResult = "Connected to \(health.hostname) (\(health.cpuCores) cores)"
+            } catch {
+                testSucceeded = false
+                testResult = error.localizedDescription
+            }
+            isTesting = false
+        }
+    }
+
+    private func saveAll() {
+        guard var updated = host else { return }
+        isSaving = true
+        statusIsError = false
+        statusMessage = "Saving…"
+
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        updated.name = trimmedName.isEmpty ? updated.name : trimmedName
+        if !updated.isLocal {
+            let trimmedAddr = address.trimmingCharacters(in: .whitespaces)
+            if !trimmedAddr.isEmpty {
+                updated.address = trimmedAddr
+            }
+            if let parsedPort = Int(port), parsedPort > 0 && parsedPort <= 65535 {
+                updated.port = parsedPort
+            }
+            updated.enabled = enabled
+        }
+
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clearStoredToken && trimmedToken.isEmpty {
+            store.updateHost(updated, newToken: nil, clearToken: true)
+            hasStoredToken = false
+            clearStoredToken = false
+        } else if !trimmedToken.isEmpty {
+            store.updateHost(updated, newToken: trimmedToken, clearToken: false)
+            hasStoredToken = true
+            clearStoredToken = false
+            token = ""
+        } else {
+            store.updateHost(updated, newToken: nil, clearToken: false)
+        }
+
+        Task {
+            if alertConfigLoaded || hostState?.status.isOnline == true {
+                do {
+                    try await store.saveAlertConfig(alertConfig, for: updated.id)
+                    alertConfigLoaded = true
+                    statusIsError = false
+                    statusMessage = "Saved"
+                } catch {
+                    statusIsError = true
+                    statusMessage = "Machine saved; thresholds failed: \(error.localizedDescription)"
+                }
+            } else {
+                statusIsError = false
+                statusMessage = "Machine saved"
+            }
+            isSaving = false
         }
     }
 }
@@ -253,6 +590,12 @@ private struct AddMachineSheet: View {
 
     private var alreadyAddedAddresses: Set<String> {
         Set(store.hosts.map { $0.address.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")) })
+    }
+
+    private var showTokenHelp: Bool {
+        if selectedPeer?.fleetdStatus == .requiresToken { return true }
+        if let res = testResult, res.contains("401") || res.lowercased().contains("token") { return true }
+        return false
     }
 
     var body: some View {
@@ -293,10 +636,10 @@ private struct AddMachineSheet: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 130)
+                    .frame(maxHeight: 145)
                 }
             } else if !isScanning {
-                Text("Enter a machine's Tailscale hostname or IP (e.g. linux-tower or 100.x.y.z) and its fleetd bearer token.")
+                Text("Enter a machine's Tailscale hostname or IP (e.g. linux-tower or 100.x.y.z). No bearer token is needed for private Tailnet agents.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -305,13 +648,13 @@ private struct AddMachineSheet: View {
                 TextField("Display Name", text: $name, prompt: Text("Linux Tower"))
                 TextField("Tailscale Host / IP", text: $address, prompt: Text("linux-tower.tailnet.ts.net"))
                 TextField("Port", text: $port)
-                SecureField("Bearer Token", text: $token, prompt: Text("fls_..."))
+                SecureField("Bearer Token", text: $token, prompt: Text("Optional (not needed on private Tailnet)"))
             }
             .formStyle(.grouped)
 
-            if let peer = selectedPeer {
+            if let peer = selectedPeer, showTokenHelp {
                 HStack(spacing: 6) {
-                    Text("Need the token from \(peer.hostName)?")
+                    Text("\(peer.hostName) requires a bearer token:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -346,23 +689,24 @@ private struct AddMachineSheet: View {
                 Button(isTesting ? "Testing…" : "Test Connection") {
                     runTest()
                 }
-                .disabled(address.isEmpty || token.isEmpty || isTesting)
+                .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty || isTesting)
 
                 Spacer()
 
-                Button("Cancel") { dismiss() }
+                Button("Done") { dismiss() }
                 Button("Add Machine") {
                     let finalPort = Int(port) ?? 9470
-                    let finalName = name.isEmpty ? address : name
-                    _ = store.addHost(name: finalName, address: address, port: finalPort, token: token)
+                    let trimmedAddr = address.trimmingCharacters(in: .whitespaces)
+                    let finalName = name.trimmingCharacters(in: .whitespaces).isEmpty ? trimmedAddr : name.trimmingCharacters(in: .whitespaces)
+                    _ = store.addHost(name: finalName, address: trimmedAddr, port: finalPort, token: token)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(address.isEmpty || token.isEmpty)
+                .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(18)
-        .frame(width: 480)
+        .frame(width: 500)
         .onAppear {
             scanTailnet()
         }
@@ -370,60 +714,76 @@ private struct AddMachineSheet: View {
 
     private func peerRow(_ peer: DiscoveredTailscalePeer, alreadyAdded: Bool) -> some View {
         let isSelected = selectedPeer?.id == peer.id
-        return Button {
-            selectedPeer = peer
-            name = peer.hostName
-            address = peer.preferredAddress
-            testResult = nil
-        } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(peer.isOnline ? Color.green : Color.gray.opacity(0.45))
-                    .frame(width: 6.5, height: 6.5)
-                Image(systemName: peer.isLinux ? "server.rack" : "macmini")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(peer.hostName)
-                        .font(.system(size: 11.5, weight: .medium))
-                    Text("\(peer.ipv4) · \(peer.os)")
-                        .font(.system(size: 10, design: .monospaced))
+        return HStack(spacing: 8) {
+            Button {
+                selectedPeer = peer
+                name = peer.hostName
+                address = peer.preferredAddress
+                testResult = nil
+            } label: {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(peer.isOnline ? Color.green : Color.gray.opacity(0.45))
+                        .frame(width: 6.5, height: 6.5)
+                    Image(systemName: peer.isLinux ? "server.rack" : "macmini")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(peer.hostName)
+                            .font(.system(size: 11.5, weight: .medium))
+                        Text("\(peer.ipv4) · \(peer.os)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer()
-                if alreadyAdded {
-                    Text("Added")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.14), in: Capsule())
-                } else if peer.fleetdDetected {
-                    Text("fleetd detected")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.green.opacity(0.15), in: Capsule())
-                } else if !peer.isOnline {
-                    Text("Offline")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : .clear, lineWidth: 1)
-            )
+            .buttonStyle(.plain)
+            .disabled(alreadyAdded)
+
+            if alreadyAdded {
+                Text("Added")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.14), in: Capsule())
+            } else if peer.fleetdStatus == .ready {
+                Button("+ Add") {
+                    let finalPort = Int(port) ?? 9470
+                    _ = store.addHost(
+                        name: peer.hostName,
+                        address: peer.preferredAddress,
+                        port: finalPort,
+                        token: ""
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+            } else if peer.fleetdStatus == .requiresToken {
+                Text("token required")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.15), in: Capsule())
+            } else if !peer.isOnline {
+                Text("Offline")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(alreadyAdded)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : .clear, lineWidth: 1)
+        )
         .opacity(alreadyAdded ? 0.55 : 1.0)
     }
 
@@ -442,7 +802,11 @@ private struct AddMachineSheet: View {
         let p = Int(port) ?? 9470
         Task {
             do {
-                let health = try await store.testConnection(address: address, port: p, token: token)
+                let health = try await store.testConnection(
+                    address: address.trimmingCharacters(in: .whitespaces),
+                    port: p,
+                    token: token
+                )
                 testSucceeded = true
                 testResult = "Connected to \(health.hostname) (\(health.osVersion), \(health.cpuCores) cores)"
                 if name.isEmpty {
@@ -460,15 +824,17 @@ private struct AddMachineSheet: View {
 private struct InstallCommandSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var platform = 0 // 0 = Linux systemd, 1 = macOS launchd
+    @State private var requireToken = false
     @State private var generatedToken = KeychainStore.generateRandomToken()
     @State private var copied = false
 
     private var command: String {
         let baseURL = "https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh"
-        if platform == 0 {
-            return "curl -fsSL \(baseURL) | sudo sh -s -- --token \"\(generatedToken)\""
+        let shell = platform == 0 ? "sudo sh" : "sh"
+        if requireToken {
+            return "curl -fsSL \(baseURL) | \(shell) -s -- --token \"\(generatedToken)\""
         } else {
-            return "curl -fsSL \(baseURL) | sh -s -- --token \"\(generatedToken)\""
+            return "curl -fsSL \(baseURL) | \(shell)"
         }
     }
 
@@ -478,10 +844,12 @@ private struct InstallCommandSheet: View {
                 Text("Install fleetd on a Remote Machine")
                     .font(.headline)
                 Spacer()
-                Button("Regenerate Token") {
-                    generatedToken = KeychainStore.generateRandomToken()
+                if requireToken {
+                    Button("Regenerate Token") {
+                        generatedToken = KeychainStore.generateRandomToken()
+                    }
+                    .font(.caption)
                 }
-                .font(.caption)
             }
 
             Picker("Platform", selection: $platform) {
@@ -490,24 +858,33 @@ private struct InstallCommandSheet: View {
             }
             .pickerStyle(.segmented)
 
-            HStack {
-                Text("Bearer Token:")
+            Toggle("Require bearer token (optional, for shared Tailnets)", isOn: $requireToken)
+                .font(.caption)
+
+            if requireToken {
+                HStack {
+                    Text("Bearer Token:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(generatedToken)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Copy Token") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(generatedToken, forType: .string)
+                    }
+                    .font(.caption)
+                }
+            } else {
+                Text("Tailscale-only peer allowlist & anti-browser guards are enabled automatically. Once installed, the machine appears for 1-click Add in Tailscale discovery.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(generatedToken)
-                    .font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                Spacer()
-                Button("Copy Token") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(generatedToken, forType: .string)
-                }
-                .font(.caption)
             }
 
             TextEditor(text: .constant(command))
                 .font(.system(size: 11, design: .monospaced))
-                .frame(height: 110)
+                .frame(height: 82)
                 .border(Color.secondary.opacity(0.25))
 
             HStack {
@@ -531,12 +908,135 @@ private struct InstallCommandSheet: View {
     }
 }
 
+// MARK: - Shared Alert Thresholds & Webhooks Form Sections
+
+private struct AlertConfigFormSections: View {
+    @Binding var config: AlertConfig
+    @Binding var newWebhookKind: WebhookKind
+    @Binding var newWebhookURL: String
+    @Binding var newWebhookToken: String
+    var agentReachable: Bool = true
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("CPU Warn / Crit (%)")
+                Spacer()
+                TextField("", value: $config.cpuWarnPct, format: .number).frame(width: 50)
+                Text("/")
+                TextField("", value: $config.cpuCritPct, format: .number).frame(width: 50)
+                Text("for")
+                TextField("", value: $config.cpuDurationSecs, format: .number).frame(width: 50)
+                Text("s")
+            }
+            HStack {
+                Text("RAM Warn / Crit (%)")
+                Spacer()
+                TextField("", value: $config.memWarnPct, format: .number).frame(width: 50)
+                Text("/")
+                TextField("", value: $config.memCritPct, format: .number).frame(width: 50)
+                Text("for")
+                TextField("", value: $config.memDurationSecs, format: .number).frame(width: 50)
+                Text("s")
+            }
+            HStack {
+                Text("Swap Warn / Crit (%)")
+                Spacer()
+                TextField("", value: $config.swapWarnPct, format: .number).frame(width: 50)
+                Text("/")
+                TextField("", value: $config.swapCritPct, format: .number).frame(width: 50)
+                Text("for")
+                TextField("", value: $config.swapDurationSecs, format: .number).frame(width: 50)
+                Text("s")
+            }
+            HStack {
+                Text("Disk Warn / Crit (%)")
+                Spacer()
+                TextField("", value: $config.diskWarnPct, format: .number).frame(width: 50)
+                Text("/")
+                TextField("", value: $config.diskCritPct, format: .number).frame(width: 50)
+            }
+            HStack {
+                Text("Alert Cooldown")
+                Spacer()
+                TextField("", value: $config.cooldownSecs, format: .number).frame(width: 60)
+                Text("seconds")
+                    .foregroundStyle(.secondary)
+            }
+            Toggle("Immediate alert on Linux OOM killer events", isOn: $config.oomAlertsEnabled)
+
+            HStack {
+                if !agentReachable {
+                    Text("Agent offline — thresholds will sync when reachable.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+                Button("Reset Defaults") {
+                    let savedWebhooks = config.webhooks
+                    config = AlertConfig.defaults
+                    config.webhooks = savedWebhooks
+                }
+                .font(.caption)
+            }
+        } header: {
+            Text("Warning & Critical Thresholds")
+        }
+
+        Section("Agent Webhooks (fires even when MacBook sleeps)") {
+            ForEach(config.webhooks.indices, id: \.self) { idx in
+                HStack {
+                    Toggle("", isOn: $config.webhooks[idx].enabled).labelsHidden()
+                    Text(config.webhooks[idx].kind.displayName)
+                        .font(.caption.bold())
+                    Text(config.webhooks[idx].url)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button(role: .destructive) {
+                        config.webhooks.remove(at: idx)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            HStack(spacing: 6) {
+                Picker("", selection: $newWebhookKind) {
+                    ForEach(WebhookKind.allCases) { k in
+                        Text(k.displayName).tag(k)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 100)
+
+                TextField("Webhook URL (e.g. https://ntfy.sh/my-fleet)", text: $newWebhookURL)
+                Button("Add") {
+                    guard !newWebhookURL.isEmpty else { return }
+                    config.webhooks.append(WebhookTarget(
+                        name: newWebhookKind.displayName,
+                        kind: newWebhookKind,
+                        url: newWebhookURL,
+                        tokenOrKey: newWebhookToken.isEmpty ? nil : newWebhookToken
+                    ))
+                    newWebhookURL = ""
+                    newWebhookToken = ""
+                }
+                .disabled(newWebhookURL.isEmpty)
+            }
+        }
+    }
+}
+
 // MARK: - Alert Rules & Webhooks Tab
 
 private struct AlertRulesSettingsTab: View {
     @Bindable var store: FleetStore
     @State private var targetHostID: UUID?
     @State private var config = AlertConfig.defaults
+    @State private var agentReachable = true
     @State private var statusMessage: String?
     @State private var newWebhookKind: WebhookKind = .ntfy
     @State private var newWebhookURL = ""
@@ -564,81 +1064,13 @@ private struct AlertRulesSettingsTab: View {
             }
 
             Form {
-                Section("Thresholds (Sustained)") {
-                    HStack {
-                        Text("CPU Warn / Crit (%)")
-                        Spacer()
-                        TextField("", value: $config.cpuWarnPct, format: .number).frame(width: 52)
-                        Text("/")
-                        TextField("", value: $config.cpuCritPct, format: .number).frame(width: 52)
-                        Text("for")
-                        TextField("", value: $config.cpuDurationSecs, format: .number).frame(width: 52)
-                        Text("s")
-                    }
-                    HStack {
-                        Text("RAM Warn / Crit (%)")
-                        Spacer()
-                        TextField("", value: $config.memWarnPct, format: .number).frame(width: 52)
-                        Text("/")
-                        TextField("", value: $config.memCritPct, format: .number).frame(width: 52)
-                        Text("for")
-                        TextField("", value: $config.memDurationSecs, format: .number).frame(width: 52)
-                        Text("s")
-                    }
-                    HStack {
-                        Text("Disk Warn / Crit (%)")
-                        Spacer()
-                        TextField("", value: $config.diskWarnPct, format: .number).frame(width: 52)
-                        Text("/")
-                        TextField("", value: $config.diskCritPct, format: .number).frame(width: 52)
-                    }
-                    Toggle("Immediate alert on Linux OOM killer events", isOn: $config.oomAlertsEnabled)
-                }
-
-                Section("Agent Webhooks (fires even when MacBook sleeps)") {
-                    ForEach(config.webhooks.indices, id: \.self) { idx in
-                        HStack {
-                            Toggle("", isOn: $config.webhooks[idx].enabled).labelsHidden()
-                            Text(config.webhooks[idx].kind.displayName)
-                                .font(.caption.bold())
-                            Text(config.webhooks[idx].url)
-                                .font(.caption)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer()
-                            Button(role: .destructive) {
-                                config.webhooks.remove(at: idx)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-
-                    HStack(spacing: 6) {
-                        Picker("", selection: $newWebhookKind) {
-                            ForEach(WebhookKind.allCases) { k in
-                                Text(k.displayName).tag(k)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 100)
-
-                        TextField("Webhook URL (e.g. https://ntfy.sh/my-fleet)", text: $newWebhookURL)
-                        Button("Add") {
-                            guard !newWebhookURL.isEmpty else { return }
-                            config.webhooks.append(WebhookTarget(
-                                name: newWebhookKind.displayName,
-                                kind: newWebhookKind,
-                                url: newWebhookURL,
-                                tokenOrKey: newWebhookToken.isEmpty ? nil : newWebhookToken
-                            ))
-                            newWebhookURL = ""
-                            newWebhookToken = ""
-                        }
-                        .disabled(newWebhookURL.isEmpty)
-                    }
-                }
+                AlertConfigFormSections(
+                    config: $config,
+                    newWebhookKind: $newWebhookKind,
+                    newWebhookURL: $newWebhookURL,
+                    newWebhookToken: $newWebhookToken,
+                    agentReachable: agentReachable
+                )
             }
             .formStyle(.grouped)
         }
@@ -658,8 +1090,10 @@ private struct AlertRulesSettingsTab: View {
         Task {
             if let loaded = await store.loadAlertConfig(for: id) {
                 config = loaded
+                agentReachable = true
                 statusMessage = nil
             } else {
+                agentReachable = false
                 statusMessage = "Host offline"
             }
         }
@@ -671,6 +1105,7 @@ private struct AlertRulesSettingsTab: View {
         Task {
             do {
                 try await store.saveAlertConfig(config, for: id)
+                agentReachable = true
                 statusMessage = "Saved"
             } catch {
                 statusMessage = error.localizedDescription
@@ -692,6 +1127,7 @@ private struct GeneralSettingsTab: View {
     @AppStorage("menubar.showNetwork") private var showNetwork = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var exposeLocalAgent = false
+    @State private var requireLocalToken = false
 
     var body: some View {
         Form {
@@ -740,8 +1176,7 @@ private struct GeneralSettingsTab: View {
                         supervisor.exposeOnNetwork = enabled
                     }
 
-                if exposeLocalAgent, let localID = store.localHost?.id,
-                   let token = KeychainStore.loadToken(for: localID) {
+                if exposeLocalAgent {
                     HStack {
                         Text("Local Agent Port")
                             .foregroundStyle(.secondary)
@@ -749,18 +1184,31 @@ private struct GeneralSettingsTab: View {
                         Text("\(supervisor.activePort)")
                             .font(.system(size: 11, design: .monospaced))
                     }
-                    HStack {
-                        Text("Local Agent Token")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text(token)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .textSelection(.enabled)
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(token, forType: .string)
+
+                    Toggle("Require bearer token for remote peers", isOn: $requireLocalToken)
+                        .onChange(of: requireLocalToken) { _, enabled in
+                            supervisor.requireToken = enabled
                         }
-                        .font(.caption)
+
+                    if requireLocalToken, let localID = store.localHost?.id {
+                        let token = supervisor.localToken(for: localID)
+                        HStack {
+                            Text("Local Agent Token")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(token)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .textSelection(.enabled)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(token, forType: .string)
+                            }
+                            .font(.caption)
+                        }
+                    } else {
+                        Text("Tailscale-only peer allowlist & anti-browser guards are active. No bearer token is needed on your private Tailnet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -769,6 +1217,7 @@ private struct GeneralSettingsTab: View {
         .padding(12)
         .onAppear {
             exposeLocalAgent = supervisor.exposeOnNetwork
+            requireLocalToken = supervisor.requireToken
         }
     }
 

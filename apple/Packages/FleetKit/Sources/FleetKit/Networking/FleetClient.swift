@@ -12,7 +12,7 @@ public enum FleetClientError: Error, LocalizedError, Sendable {
         case .invalidURL: "Invalid host address"
         case .insecureRemoteHost(let host):
             "Refusing to send bearer token over plaintext HTTP to '\(host)'. Use a Tailscale IP/MagicDNS host or https://."
-        case .unauthorized: "Invalid bearer token (401)"
+        case .unauthorized: "Bearer token required or invalid (401)"
         case .httpStatus(let code): "HTTP error \(code)"
         case .network(let msg): msg
         }
@@ -37,17 +37,17 @@ public final class FleetClient: Sendable {
         self.streamSession = URLSession(configuration: scfg)
     }
 
-    public func fetchHealth(host: FleetHostConfig, token: String) async throws -> HealthResponse {
+    public func fetchHealth(host: FleetHostConfig, token: String = "") async throws -> HealthResponse {
         try await get(path: "/v1/health", host: host, token: token)
     }
 
-    public func fetchSnapshot(host: FleetHostConfig, token: String) async throws -> HostSnapshot {
+    public func fetchSnapshot(host: FleetHostConfig, token: String = "") async throws -> HostSnapshot {
         try await get(path: "/v1/snapshot", host: host, token: token)
     }
 
     public func fetchHistory(
         host: FleetHostConfig,
-        token: String,
+        token: String = "",
         window: HistoryWindow
     ) async throws -> HistoryResponse {
         let w = window == .live ? "15m" : window.rawValue
@@ -56,26 +56,26 @@ public final class FleetClient: Sendable {
 
     public func fetchEvents(
         host: FleetHostConfig,
-        token: String,
+        token: String = "",
         limit: Int = 60
     ) async throws -> [FleetEvent] {
         let resp: EventsResponse = try await get(path: "/v1/events?limit=\(limit)", host: host, token: token)
         return resp.events
     }
 
-    public func fetchAlertConfig(host: FleetHostConfig, token: String) async throws -> AlertConfig {
+    public func fetchAlertConfig(host: FleetHostConfig, token: String = "") async throws -> AlertConfig {
         try await get(path: "/v1/alerts/config", host: host, token: token)
     }
 
     public func updateAlertConfig(
         host: FleetHostConfig,
-        token: String,
+        token: String = "",
         config: AlertConfig
     ) async throws -> AlertConfig {
         let url = try validatedURL(path: "/v1/alerts/config", host: host)
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        applyClientHeaders(to: &req, token: token)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try FleetJSON.makeEncoder().encode(config)
 
@@ -84,7 +84,7 @@ public final class FleetClient: Sendable {
         return try FleetJSON.makeDecoder().decode(AlertConfig.self, from: data)
     }
 
-    public func stream(host: FleetHostConfig, token: String) -> AsyncThrowingStream<StreamMessage, Error> {
+    public func stream(host: FleetHostConfig, token: String = "") -> AsyncThrowingStream<StreamMessage, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 let url: URL
@@ -95,7 +95,7 @@ public final class FleetClient: Sendable {
                     return
                 }
                 var req = URLRequest(url: url)
-                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                applyClientHeaders(to: &req, token: token)
                 req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                 req.cachePolicy = .reloadIgnoringLocalCacheData
 
@@ -127,10 +127,18 @@ public final class FleetClient: Sendable {
     private func get<T: Decodable>(path: String, host: FleetHostConfig, token: String) async throws -> T {
         let url = try validatedURL(path: path, host: host)
         var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        applyClientHeaders(to: &req, token: token)
         let (data, response) = try await session.data(for: req)
         try validateHTTP(response)
         return try FleetJSON.makeDecoder().decode(T.self, from: data)
+    }
+
+    private func applyClientHeaders(to req: inout URLRequest, token: String) {
+        req.setValue("1", forHTTPHeaderField: "X-FleetStats")
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            req.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        }
     }
 
     /// Ensures bearer tokens are never sent over plaintext HTTP to public internet hosts.

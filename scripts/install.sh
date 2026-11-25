@@ -1,21 +1,24 @@
 #!/usr/bin/env sh
 # FleetStats universal agent installer (Linux systemd & macOS launchd)
 # Hardened: verifies SHA-256 checksums, binds Tailscale + loopback only by default,
-# passes bearer tokens via environment variables, and sandboxes service units.
+# blocks browser requests, uses zero-token Tailscale trust by default (optional --token / --require-token),
+# and sandboxes service units.
 #
 # Linux (Debian / Ubuntu / Arch / Fedora — x86_64 & arm64):
 #   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sudo sh
-#   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sudo sh -s -- --token "fls_..."
+#   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sudo sh -s -- --require-token
 #
 # Headless macOS (Mac Mini / Intel iMac):
 #   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sh -s -- --token "fls_..."
+#   curl -fsSL https://raw.githubusercontent.com/erskingardner/fleet-stats/main/scripts/install.sh | sh -s -- --require-token
 
 set -eu
 
 REPO="${FLEETSTATS_REPO:-erskingardner/fleet-stats}"
 VERSION="latest"
 TOKEN=""
+REQUIRE_TOKEN="0"
+NO_TOKEN="0"
 BIND_ADDR="tailscale:9470"
 
 while [ "$#" -gt 0 ]; do
@@ -23,6 +26,14 @@ while [ "$#" -gt 0 ]; do
     --token)
       TOKEN="$2"
       shift 2
+      ;;
+    --require-token)
+      REQUIRE_TOKEN="1"
+      shift 1
+      ;;
+    --no-token)
+      NO_TOKEN="1"
+      shift 1
       ;;
     --bind)
       BIND_ADDR="$2"
@@ -142,8 +153,16 @@ if [ "$OS" = "linux" ]; then
   chown -R fleetd:fleetd /etc/fleetd /var/lib/fleetd
   chmod 0750 /etc/fleetd /var/lib/fleetd
 
-  if [ ! -f /etc/fleetd/config.toml ] || [ -n "$TOKEN" ]; then
-    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config /etc/fleetd/config.toml init --bind "$BIND_ADDR" >/dev/null
+  if [ ! -f /etc/fleetd/config.toml ] || [ -n "$TOKEN" ] || [ "$REQUIRE_TOKEN" = "1" ] || [ "$NO_TOKEN" = "1" ]; then
+    INIT_FLAGS="--bind ${BIND_ADDR}"
+    if [ "$REQUIRE_TOKEN" = "1" ]; then
+      INIT_FLAGS="${INIT_FLAGS} --require-token"
+    fi
+    if [ "$NO_TOKEN" = "1" ]; then
+      INIT_FLAGS="${INIT_FLAGS} --no-token"
+    fi
+    # shellcheck disable=SC2086
+    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config /etc/fleetd/config.toml init $INIT_FLAGS >/dev/null
     sed -i 's|^db_path = .*|db_path = "/var/lib/fleetd/fleetd.db"|' /etc/fleetd/config.toml
     chown fleetd:fleetd /etc/fleetd/config.toml
     chmod 0600 /etc/fleetd/config.toml
@@ -198,7 +217,12 @@ EOF
   echo "  fleetd is installed and running (systemd, Tailscale-only)!"
   echo "  Host / Tailscale IP : ${TS_IP}"
   echo "  Bind                : ${BIND_ADDR}"
-  echo "  Bearer Token        : ${FINAL_TOKEN}"
+  if [ -n "$FINAL_TOKEN" ]; then
+    echo "  Auth                : Bearer token required"
+    echo "  Bearer Token        : ${FINAL_TOKEN}"
+  else
+    echo "  Auth                : Tailscale-only (zero-token, browser requests blocked)"
+  fi
   echo "============================================================"
 else
   echo "==> Installing /usr/local/bin/fleetd (sudo may prompt for password)..."
@@ -211,8 +235,16 @@ else
   mkdir -p "$CFG_DIR" "$LOG_DIR"
   chmod 0700 "$CFG_DIR" "$LOG_DIR"
 
-  if [ ! -f "$CFG_PATH" ] || [ -n "$TOKEN" ]; then
-    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config "$CFG_PATH" init --bind "$BIND_ADDR" >/dev/null
+  if [ ! -f "$CFG_PATH" ] || [ -n "$TOKEN" ] || [ "$REQUIRE_TOKEN" = "1" ] || [ "$NO_TOKEN" = "1" ]; then
+    INIT_FLAGS="--bind ${BIND_ADDR}"
+    if [ "$REQUIRE_TOKEN" = "1" ]; then
+      INIT_FLAGS="${INIT_FLAGS} --require-token"
+    fi
+    if [ "$NO_TOKEN" = "1" ]; then
+      INIT_FLAGS="${INIT_FLAGS} --no-token"
+    fi
+    # shellcheck disable=SC2086
+    FLEETD_TOKEN="$TOKEN" /usr/local/bin/fleetd --config "$CFG_PATH" init $INIT_FLAGS >/dev/null
   fi
 
   PLIST="${HOME}/Library/LaunchAgents/com.paper-robin.fleetd.plist"
@@ -256,6 +288,11 @@ EOF
   echo "  fleetd is installed and running (launchd, Tailscale-only)!"
   echo "  Host / Tailscale IP : ${TS_IP}"
   echo "  Bind                : ${BIND_ADDR}"
-  echo "  Bearer Token        : ${FINAL_TOKEN}"
+  if [ -n "$FINAL_TOKEN" ]; then
+    echo "  Auth                : Bearer token required"
+    echo "  Bearer Token        : ${FINAL_TOKEN}"
+  else
+    echo "  Auth                : Tailscale-only (zero-token, browser requests blocked)"
+  fi
   echo "============================================================"
 fi
