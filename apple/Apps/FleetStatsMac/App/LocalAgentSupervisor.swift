@@ -90,7 +90,8 @@ final class LocalAgentSupervisor {
         proc.executableURL = binURL
         proc.arguments = [
             "serve",
-            "--bind", bindSpec
+            "--bind", bindSpec,
+            "--parent-pid", "\(ProcessInfo.processInfo.processIdentifier)"
         ]
         // Pass bearer token via environment variable rather than CLI args so it is not visible in `ps`
         var env = ProcessInfo.processInfo.environment

@@ -49,6 +49,9 @@ enum Commands {
         /// Allow non-Tailscale/non-loopback peers (disabled by default)
         #[arg(long, default_value_t = false)]
         allow_non_tailscale: bool,
+        /// Exit automatically if the given parent PID disappears (used when bundled inside FleetStats.app)
+        #[arg(long)]
+        parent_pid: Option<i32>,
     },
     /// Initialize config file and print the generated bearer token
     Init {
@@ -85,6 +88,7 @@ async fn main() {
         token: None,
         db: None,
         allow_non_tailscale: false,
+        parent_pid: None,
     }) {
         Commands::Init { bind, token } => {
             let mut cfg = AgentConfig::load_or_create(&cfg_path).unwrap_or_default();
@@ -123,6 +127,7 @@ async fn main() {
             token,
             db,
             allow_non_tailscale,
+            parent_pid,
         } => {
             let mut cfg = match AgentConfig::load_or_create(&cfg_path) {
                 Ok(c) => c,
@@ -148,7 +153,7 @@ async fn main() {
                 std::process::exit(1);
             }
 
-            if let Err(e) = run_server(cfg, cfg_path).await {
+            if let Err(e) = run_server(cfg, cfg_path, parent_pid).await {
                 error!("fleetd exited with error: {e}");
                 std::process::exit(1);
             }
@@ -156,7 +161,11 @@ async fn main() {
     }
 }
 
-async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String> {
+async fn run_server(
+    cfg: AgentConfig,
+    config_path: PathBuf,
+    parent_pid: Option<i32>,
+) -> Result<(), String> {
     let storage = Arc::new(Storage::open(
         &cfg.db_path,
         cfg.raw_retention_hours,
@@ -276,7 +285,7 @@ async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String
         }));
     }
 
-    shutdown_signal().await;
+    shutdown_signal(parent_pid).await;
     let _ = shutdown_tx.send(());
     for h in handles {
         let _ = h.await;
@@ -287,7 +296,7 @@ async fn run_server(cfg: AgentConfig, config_path: PathBuf) -> Result<(), String
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(parent_pid: Option<i32>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -304,8 +313,27 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    let parent_gone = async {
+        let Some(ppid) = parent_pid else {
+            return std::future::pending::<()>().await;
+        };
+        let mut ticker = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            ticker.tick().await;
+            #[cfg(unix)]
+            {
+                let alive = unsafe { libc::kill(ppid, 0) == 0 };
+                if !alive {
+                    info!(parent_pid = ppid, "parent process exited; shutting down fleetd");
+                    break;
+                }
+            }
+        }
+    };
+
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = parent_gone => {},
     }
 }
