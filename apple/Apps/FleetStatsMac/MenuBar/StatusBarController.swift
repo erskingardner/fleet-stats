@@ -88,7 +88,7 @@ struct MenuBarStripView: View {
     }
 
     private var networkColumn: some View {
-        VStack(alignment: .trailing, spacing: -1) {
+        VStack(alignment: .trailing, spacing: 0.5) {
             HStack(spacing: 3) {
                 Circle()
                     .fill(Color(red: 1.0, green: 0.27, blue: 0.23))
@@ -110,7 +110,7 @@ struct MenuBarStripView: View {
                     .lineLimit(1)
             }
         }
-        .offset(y: -1.5)
+        .offset(y: -0.75)
         .fixedSize()
     }
 }
