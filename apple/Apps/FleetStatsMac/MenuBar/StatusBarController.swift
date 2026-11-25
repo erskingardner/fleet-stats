@@ -28,8 +28,13 @@ struct MenuBarStripView: View {
 
     private var snap: HostSnapshot? { store.localSnapshot }
 
+    static let percentColumnWidth: CGFloat = 35
+    static let networkColumnWidth: CGFloat = 59
+    static let columnSpacing: CGFloat = 9
+    static let horizontalPadding: CGFloat = 6
+
     var body: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: Self.columnSpacing) {
             if config.showCPU {
                 percentColumn(
                     label: "CPU",
@@ -58,7 +63,7 @@ struct MenuBarStripView: View {
                 networkColumn
             }
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, Self.horizontalPadding)
         .frame(maxHeight: .infinity, alignment: .center)
         .offset(y: 1.5)
     }
@@ -74,8 +79,9 @@ struct MenuBarStripView: View {
                 .monospacedDigit()
                 .foregroundStyle(isAlert ? Color.red : Color.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
-        .frame(width: 30, alignment: .leading)
+        .frame(width: Self.percentColumnWidth, alignment: .leading)
         .fixedSize()
     }
 
@@ -109,8 +115,9 @@ struct MenuBarStripView: View {
             Text(value)
                 .font(.system(size: 9, weight: .regular))
                 .monospacedDigit()
-                .frame(width: 23, alignment: .trailing)
+                .frame(width: 25, alignment: .trailing)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Spacer().frame(width: 2)
             Text(unit)
                 .font(.system(size: 9, weight: .regular))
@@ -254,14 +261,14 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     /// Maps an X coordinate inside the menu bar strip to the exact clicked metric zone.
     private func metricTab(atX x: CGFloat) -> MetricTab {
         var zones: [(MetricTab, CGFloat)] = []
-        if stripConfig.showCPU { zones.append((.cpu, 30)) }
-        if stripConfig.showRAM { zones.append((.ram, 30)) }
-        if stripConfig.showSSD { zones.append((.ssd, 30)) }
-        if stripConfig.showNetwork { zones.append((.network, 57)) }
+        if stripConfig.showCPU { zones.append((.cpu, MenuBarStripView.percentColumnWidth)) }
+        if stripConfig.showRAM { zones.append((.ram, MenuBarStripView.percentColumnWidth)) }
+        if stripConfig.showSSD { zones.append((.ssd, MenuBarStripView.percentColumnWidth)) }
+        if stripConfig.showNetwork { zones.append((.network, MenuBarStripView.networkColumnWidth)) }
         guard !zones.isEmpty else { return .cpu }
 
-        let spacing: CGFloat = 11
-        var cursor: CGFloat = 6
+        let spacing = MenuBarStripView.columnSpacing
+        var cursor = MenuBarStripView.horizontalPadding
         for (idx, (tab, width)) in zones.enumerated() {
             let rightEdge = (idx == zones.count - 1)
                 ? CGFloat.greatestFiniteMagnitude
