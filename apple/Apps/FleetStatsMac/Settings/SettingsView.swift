@@ -439,6 +439,13 @@ private struct GeneralSettingsTab: View {
                 if exposeLocalAgent, let localID = store.localHost?.id,
                    let token = KeychainStore.loadToken(for: localID) {
                     HStack {
+                        Text("Local Agent Port")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(supervisor.activePort)")
+                            .font(.system(size: 11, design: .monospaced))
+                    }
+                    HStack {
                         Text("Local Agent Token")
                             .foregroundStyle(.secondary)
                         Spacer()

@@ -154,7 +154,9 @@ public final class FleetStore {
     }
 
     public func ensureLocalHost(name: String, port: Int = 9470, token: String) -> FleetHostConfig {
-        if let existing = hosts.first(where: \.isLocal) {
+        if let idx = hosts.firstIndex(where: \.isLocal) {
+            hosts[idx].port = port
+            let existing = hosts[idx]
             KeychainStore.saveToken(token, for: existing.id)
             if states[existing.id] == nil {
                 states[existing.id] = HostRuntimeState()
@@ -162,6 +164,7 @@ public final class FleetStore {
             if selectedHostID == nil {
                 selectedHostID = existing.id
             }
+            persistHosts()
             startStreaming(host: existing)
             return existing
         }
