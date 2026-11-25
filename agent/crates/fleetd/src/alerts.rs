@@ -109,35 +109,13 @@ impl AlertEngine {
             self.config.mem_duration_secs,
             now_ms,
             &snap.host.hostname,
-            top_mem_proc.clone(),
+            top_mem_proc,
             storage,
             &mut active,
             &mut emitted,
         );
 
-        // 3. Swap sustained rule
-        if snap.memory.swap_total_bytes > 0 {
-            let swap_pct = (snap.memory.swap_used_bytes as f64
-                / snap.memory.swap_total_bytes as f64)
-                * 100.0;
-            self.check_threshold(
-                "swap",
-                "swap",
-                "High Swap Usage",
-                swap_pct,
-                self.config.swap_warn_pct,
-                self.config.swap_crit_pct,
-                self.config.swap_duration_secs,
-                now_ms,
-                &snap.host.hostname,
-                top_mem_proc,
-                storage,
-                &mut active,
-                &mut emitted,
-            );
-        }
-
-        // 4. Per-volume disk space rules (immediate once crossed, with cooldown)
+        // 3. Per-volume disk space rules (immediate once crossed, with cooldown)
         for vol in &snap.disks.volumes {
             let key = format!("disk:{}", vol.mount_point);
             let title = format!("Low Disk Space ({})", vol.name);

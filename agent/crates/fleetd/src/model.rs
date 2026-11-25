@@ -303,13 +303,6 @@ pub struct AlertConfig {
     #[serde(default = "default_mem_duration")]
     pub mem_duration_secs: u64,
 
-    #[serde(default = "default_swap_warn")]
-    pub swap_warn_pct: f64,
-    #[serde(default = "default_swap_crit")]
-    pub swap_crit_pct: f64,
-    #[serde(default = "default_swap_duration")]
-    pub swap_duration_secs: u64,
-
     #[serde(default = "default_disk_warn")]
     pub disk_warn_pct: f64,
     #[serde(default = "default_disk_crit")]
@@ -343,15 +336,6 @@ fn default_mem_crit() -> f64 {
 fn default_mem_duration() -> u64 {
     60
 }
-fn default_swap_warn() -> f64 {
-    70.0
-}
-fn default_swap_crit() -> f64 {
-    90.0
-}
-fn default_swap_duration() -> u64 {
-    120
-}
 fn default_disk_warn() -> f64 {
     85.0
 }
@@ -371,9 +355,6 @@ impl Default for AlertConfig {
             mem_warn_pct: default_mem_warn(),
             mem_crit_pct: default_mem_crit(),
             mem_duration_secs: default_mem_duration(),
-            swap_warn_pct: default_swap_warn(),
-            swap_crit_pct: default_swap_crit(),
-            swap_duration_secs: default_swap_duration(),
             disk_warn_pct: default_disk_warn(),
             disk_crit_pct: default_disk_crit(),
             oom_alerts_enabled: true,

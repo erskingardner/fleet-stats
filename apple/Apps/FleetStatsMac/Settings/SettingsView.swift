@@ -940,16 +940,6 @@ private struct AlertConfigFormSections: View {
                 Text("s")
             }
             HStack {
-                Text("Swap Warn / Crit (%)")
-                Spacer()
-                TextField("", value: $config.swapWarnPct, format: .number).frame(width: 50)
-                Text("/")
-                TextField("", value: $config.swapCritPct, format: .number).frame(width: 50)
-                Text("for")
-                TextField("", value: $config.swapDurationSecs, format: .number).frame(width: 50)
-                Text("s")
-            }
-            HStack {
                 Text("Disk Warn / Crit (%)")
                 Spacer()
                 TextField("", value: $config.diskWarnPct, format: .number).frame(width: 50)

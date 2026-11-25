@@ -326,9 +326,6 @@ public struct AlertConfig: Codable, Sendable, Equatable {
     public var memWarnPct: Double
     public var memCritPct: Double
     public var memDurationSecs: UInt64
-    public var swapWarnPct: Double
-    public var swapCritPct: Double
-    public var swapDurationSecs: UInt64
     public var diskWarnPct: Double
     public var diskCritPct: Double
     public var oomAlertsEnabled: Bool
@@ -342,9 +339,6 @@ public struct AlertConfig: Codable, Sendable, Equatable {
         memWarnPct: 85,
         memCritPct: 92,
         memDurationSecs: 60,
-        swapWarnPct: 70,
-        swapCritPct: 90,
-        swapDurationSecs: 120,
         diskWarnPct: 85,
         diskCritPct: 93,
         oomAlertsEnabled: true,
