@@ -1,8 +1,9 @@
 import AppKit
 import FleetKit
+import Observation
 import SwiftUI
 
-struct MenuBarStripConfig {
+struct MenuBarStripConfig: Equatable, Sendable {
     var showCPU: Bool = true
     var showRAM: Bool = true
     var showSSD: Bool = true
@@ -16,6 +17,231 @@ struct MenuBarStripConfig {
             showSSD: d.object(forKey: "menubar.showSSD") as? Bool ?? true,
             showNetwork: d.object(forKey: "menubar.showNetwork") as? Bool ?? true
         )
+    }
+}
+
+/// Immutable value snapshot rendered into `NSStatusBarButton.image`.
+private struct MenuBarStripRenderState: Equatable, Sendable {
+    let config: MenuBarStripConfig
+    let cpuValue: String
+    let cpuAlert: Bool
+    let ramValue: String
+    let ramAlert: Bool
+    let ssdValue: String
+    let ssdAlert: Bool
+    let netUpValue: String
+    let netDownValue: String
+    let netUnit: String
+
+    init(config: MenuBarStripConfig, snapshot: HostSnapshot?) {
+        self.config = config
+        self.cpuValue = snapshot.map { ByteFormatters.percent($0.cpu.totalPct) } ?? "--%"
+        self.cpuAlert = (snapshot?.cpu.totalPct ?? 0) >= 92
+        self.ramValue = snapshot.map { ByteFormatters.percent($0.memory.usedPct) } ?? "--%"
+        self.ramAlert = snapshot?.memory.pressureLevel == .critical
+        self.ssdValue = snapshot.map { ByteFormatters.percent($0.disks.primaryUsedPct) } ?? "--%"
+        self.ssdAlert = (snapshot?.disks.primaryUsedPct ?? 0) >= 93
+        let paired = ByteFormatters.pairedMenuRates(
+            up: snapshot?.network.uploadBps ?? 0,
+            down: snapshot?.network.downloadBps ?? 0
+        )
+        self.netUpValue = paired.upValue
+        self.netDownValue = paired.downValue
+        self.netUnit = paired.unit
+    }
+}
+
+/// Renders the menu bar strip directly into a dynamic `NSImage` for `NSStatusBarButton.image`.
+/// Using `button.image` instead of adding an `NSHostingView` subview lets AppKit's status bar
+/// replicants properly dim inactive displays on multi-monitor setups and re-render per display
+/// scale and light/dark menu bar appearance without additive vibrancy artifacts.
+private enum MenuBarStripRenderer {
+    static let barHeight: CGFloat = 22
+    private static let fallbackWidth: CGFloat = 22
+
+    private static var labelFont: NSFont { NSFont.systemFont(ofSize: 7.5, weight: .regular) }
+    private static var valueFont: NSFont { NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular) }
+    private static var netValueFont: NSFont { NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular) }
+    private static var netUnitFont: NSFont { NSFont.systemFont(ofSize: 9, weight: .regular) }
+    private static var fallbackFont: NSFont { NSFont.systemFont(ofSize: 11, weight: .semibold) }
+
+    static func contentWidth(for config: MenuBarStripConfig) -> CGFloat {
+        var widths: [CGFloat] = []
+        if config.showCPU { widths.append(MenuBarStripView.percentColumnWidth) }
+        if config.showRAM { widths.append(MenuBarStripView.percentColumnWidth) }
+        if config.showSSD { widths.append(MenuBarStripView.percentColumnWidth) }
+        if config.showNetwork { widths.append(MenuBarStripView.networkColumnWidth) }
+        guard !widths.isEmpty else { return fallbackWidth }
+        return widths.reduce(0, +) + CGFloat(widths.count - 1) * MenuBarStripView.columnSpacing
+    }
+
+    static func makeImage(for state: MenuBarStripRenderState) -> NSImage {
+        let width = contentWidth(for: state.config)
+        let size = NSSize(width: width, height: barHeight)
+        let image = NSImage(size: size, flipped: true) { rect in
+            draw(state: state, in: rect)
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    private static func draw(state: MenuBarStripRenderState, in rect: NSRect) {
+        let isDark = NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let primaryColor = isDark
+            ? NSColor.white.withAlphaComponent(0.95)
+            : NSColor.black.withAlphaComponent(0.88)
+        let labelColor = isDark
+            ? NSColor.white.withAlphaComponent(0.78)
+            : NSColor.black.withAlphaComponent(0.68)
+        let alertColor = isDark
+            ? NSColor(srgbRed: 1.0, green: 0.27, blue: 0.23, alpha: 1.0)
+            : NSColor(srgbRed: 0.85, green: 0.15, blue: 0.12, alpha: 1.0)
+        let uploadDotColor = NSColor(srgbRed: 1.0, green: 0.27, blue: 0.23, alpha: 1.0)
+        let downloadDotColor = NSColor(srgbRed: 0.12, green: 0.58, blue: 1.0, alpha: 1.0)
+
+        let config = state.config
+        let hasAny = config.showCPU || config.showRAM || config.showSSD || config.showNetwork
+        guard hasAny else {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: fallbackFont,
+                .foregroundColor: primaryColor
+            ]
+            let badge = "FS" as NSString
+            let sz = badge.size(withAttributes: attrs)
+            let origin = NSPoint(
+                x: (rect.width - sz.width) / 2,
+                y: (rect.height - sz.height) / 2
+            )
+            badge.draw(at: origin, withAttributes: attrs)
+            return
+        }
+
+        var cursorX: CGFloat = 0
+
+        if config.showCPU {
+            drawPercentColumn(
+                label: "CPU",
+                value: state.cpuValue,
+                x: cursorX,
+                labelColor: labelColor,
+                valueColor: state.cpuAlert ? alertColor : primaryColor
+            )
+            cursorX += MenuBarStripView.percentColumnWidth + MenuBarStripView.columnSpacing
+        }
+
+        if config.showRAM {
+            drawPercentColumn(
+                label: "RAM",
+                value: state.ramValue,
+                x: cursorX,
+                labelColor: labelColor,
+                valueColor: state.ramAlert ? alertColor : primaryColor
+            )
+            cursorX += MenuBarStripView.percentColumnWidth + MenuBarStripView.columnSpacing
+        }
+
+        if config.showSSD {
+            drawPercentColumn(
+                label: "SSD",
+                value: state.ssdValue,
+                x: cursorX,
+                labelColor: labelColor,
+                valueColor: state.ssdAlert ? alertColor : primaryColor
+            )
+            cursorX += MenuBarStripView.percentColumnWidth + MenuBarStripView.columnSpacing
+        }
+
+        if config.showNetwork {
+            drawNetworkColumn(
+                x: cursorX,
+                upValue: state.netUpValue,
+                downValue: state.netDownValue,
+                unit: state.netUnit,
+                uploadDotColor: uploadDotColor,
+                downloadDotColor: downloadDotColor,
+                textColor: primaryColor
+            )
+        }
+    }
+
+    private static func drawPercentColumn(
+        label: String,
+        value: String,
+        x: CGFloat,
+        labelColor: NSColor,
+        valueColor: NSColor
+    ) {
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: labelFont,
+            .foregroundColor: labelColor
+        ]
+        let valueAttrs: [NSAttributedString.Key: Any] = [
+            .font: valueFont,
+            .foregroundColor: valueColor
+        ]
+        (label as NSString).draw(at: NSPoint(x: x, y: 1.0), withAttributes: labelAttrs)
+        (value as NSString).draw(at: NSPoint(x: x, y: 8.5), withAttributes: valueAttrs)
+    }
+
+    private static func drawNetworkColumn(
+        x: CGFloat,
+        upValue: String,
+        downValue: String,
+        unit: String,
+        uploadDotColor: NSColor,
+        downloadDotColor: NSColor,
+        textColor: NSColor
+    ) {
+        drawNetworkRow(
+            x: x,
+            textY: 0.25,
+            dotY: 3.25,
+            dotColor: uploadDotColor,
+            value: upValue,
+            unit: unit,
+            textColor: textColor
+        )
+        drawNetworkRow(
+            x: x,
+            textY: 10.75,
+            dotY: 13.75,
+            dotColor: downloadDotColor,
+            value: downValue,
+            unit: unit,
+            textColor: textColor
+        )
+    }
+
+    private static func drawNetworkRow(
+        x: CGFloat,
+        textY: CGFloat,
+        dotY: CGFloat,
+        dotColor: NSColor,
+        value: String,
+        unit: String,
+        textColor: NSColor
+    ) {
+        let dotRect = NSRect(x: x, y: dotY, width: 5, height: 5)
+        dotColor.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+
+        let rightAlign = NSMutableParagraphStyle()
+        rightAlign.alignment = .right
+        let valueAttrs: [NSAttributedString.Key: Any] = [
+            .font: netValueFont,
+            .foregroundColor: textColor,
+            .paragraphStyle: rightAlign
+        ]
+        let valueRect = NSRect(x: x + 8, y: textY, width: 25, height: 11)
+        (value as NSString).draw(in: valueRect, withAttributes: valueAttrs)
+
+        let unitAttrs: [NSAttributedString.Key: Any] = [
+            .font: netUnitFont,
+            .foregroundColor: textColor
+        ]
+        let unitRect = NSRect(x: x + 35, y: textY, width: 24, height: 11)
+        (unit as NSString).draw(in: unitRect, withAttributes: unitAttrs)
     }
 }
 
@@ -133,12 +359,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     private let popover: NSPopover
     private let store: FleetStore
     private let updater: AppUpdater
-    private var hostingView: NSHostingView<AnyView>?
     private var eventMonitor: Any?
+    private nonisolated(unsafe) var defaultsObserver: NSObjectProtocol?
     private let onOpenSettings: () -> Void
     private let onCheckForUpdates: () -> Void
     private let onQuit: () -> Void
     private var stripConfig = MenuBarStripConfig.load()
+    private var lastRenderedState: MenuBarStripRenderState?
 
     init(
         store: FleetStore,
@@ -159,6 +386,13 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         setupPopover()
         setupStatusItem()
         observeStripPreferences()
+        observeStoreChanges()
+    }
+
+    deinit {
+        if let observer = defaultsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func setupPopover() {
@@ -184,55 +418,49 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
     private func setupStatusItem() {
         guard let button = statusItem.button else { return }
         button.title = ""
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
         button.target = self
         button.action = #selector(handleButtonClick(_:))
         button.sendAction(on: [.leftMouseDown, .rightMouseDown])
+        statusItem.length = NSStatusItem.variableLength
 
         rebuildStripView()
     }
 
     func rebuildStripView() {
-        guard let button = statusItem.button else { return }
         stripConfig = MenuBarStripConfig.load()
-
-        hostingView?.removeFromSuperview()
-        let root = AnyView(
-            MenuBarStripView(store: store, config: stripConfig) { _ in }
-        )
-        let host = PassThroughHostingView(rootView: root)
-        host.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: button.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: button.trailingAnchor),
-            host.topAnchor.constraint(equalTo: button.topAnchor),
-            host.bottomAnchor.constraint(equalTo: button.bottomAnchor)
-        ])
-        hostingView = host
-        updateStatusItemWidth()
+        renderStrip(snapshot: store.localSnapshot, force: true)
     }
 
-    private func updateStatusItemWidth() {
-        guard let host = hostingView else { return }
-        let fit = host.fittingSize
-        if fit.width > 20 {
-            statusItem.length = ceil(fit.width) + 2
+    private func observeStoreChanges() {
+        let snapshot = withObservationTracking {
+            store.localSnapshot
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.observeStoreChanges()
+            }
         }
+        renderStrip(snapshot: snapshot)
+    }
+
+    private func renderStrip(snapshot: HostSnapshot?, force: Bool = false) {
+        guard let button = statusItem.button else { return }
+        let state = MenuBarStripRenderState(config: stripConfig, snapshot: snapshot)
+        guard force || state != lastRenderedState else { return }
+        lastRenderedState = state
+        button.image = MenuBarStripRenderer.makeImage(for: state)
     }
 
     private func observeStripPreferences() {
-        NotificationCenter.default.addObserver(
+        defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 let latest = MenuBarStripConfig.load()
-                if let self,
-                   latest.showCPU != self.stripConfig.showCPU
-                    || latest.showRAM != self.stripConfig.showRAM
-                    || latest.showSSD != self.stripConfig.showSSD
-                    || latest.showNetwork != self.stripConfig.showNetwork {
+                if let self, latest != self.stripConfig {
                     self.rebuildStripView()
                 }
             }
@@ -255,11 +483,12 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         // Always convert from global screen coordinates so multi-monitor & cross-window clicks are exact
         let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let localX = button.convert(windowPoint, from: nil).x
-        openPopover(tab: metricTab(atX: localX))
+        let imageOriginX = (button.cell as? NSButtonCell)?.imageRect(forBounds: button.bounds).minX ?? 0
+        openPopover(tab: metricTab(atImageX: localX - imageOriginX))
     }
 
-    /// Maps an X coordinate inside the menu bar strip to the exact clicked metric zone.
-    private func metricTab(atX x: CGFloat) -> MetricTab {
+    /// Maps an X coordinate inside the rendered strip image to the exact clicked metric zone.
+    private func metricTab(atImageX x: CGFloat) -> MetricTab {
         var zones: [(MetricTab, CGFloat)] = []
         if stripConfig.showCPU { zones.append((.cpu, MenuBarStripView.percentColumnWidth)) }
         if stripConfig.showRAM { zones.append((.ram, MenuBarStripView.percentColumnWidth)) }
@@ -268,7 +497,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         guard !zones.isEmpty else { return .cpu }
 
         let spacing = MenuBarStripView.columnSpacing
-        var cursor = MenuBarStripView.horizontalPadding
+        var cursor: CGFloat = 0
         for (idx, (tab, width)) in zones.enumerated() {
             let rightEdge = (idx == zones.count - 1)
                 ? CGFloat.greatestFiniteMagnitude
@@ -363,13 +592,5 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         stopEventMonitor()
-    }
-}
-
-/// Passes all hit-testing through to the parent `NSStatusBarButton` so clicks never
-/// double-fire or get swallowed by SwiftUI subviews.
-private final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
     }
 }
